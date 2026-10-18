@@ -1,0 +1,48 @@
+### Resume the interrupted Anya v4 QLoRA run.
+### Run:  llamafactory-cli train train\qlora_resume.yaml
+###
+### This is the same as qlora_qwen2.5-coder-1.5b.yaml but continues from the
+### checkpoint saved before the machine restarted, instead of starting over.
+
+### model
+model_name_or_path: Qwen/Qwen2.5-Coder-1.5B-Instruct
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_target: all
+quantization_bit: 4          # QLoRA — keeps weights in 4-bit
+
+### dataset (alpaca format)
+dataset: all
+dataset_dir: dataset
+template: qwen
+cutoff_len: 512
+overwrite_cache: true
+preprocessing_num_workers: 2
+
+### output
+output_dir: lora/qwen2.5-coder-1.5b-lora
+logging_steps: 5
+save_steps: 100
+plot_loss: true
+overwrite_output_dir: false   # must stay false when resuming
+resume_from_checkpoint: lora/qwen2.5-coder-1.5b-lora/checkpoint-1300
+
+### training (conservative to fit 8 GB)
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-4
+num_train_epochs: 2.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+bf16: true
+gradient_checkpointing: true
+ddp_timeout: 180000000
+
+### memory helpers
+flash_attn: auto
+report_to: none

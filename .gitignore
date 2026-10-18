@@ -1,0 +1,24 @@
+# --- runtime state the app creates on first run (never commit these) ---
+anya-ui/anya_chats.db
+anya-ui/anya_chats.db-*
+anya-ui/config.json
+anya-ui/approvals.json
+anya-ui/current.txt
+
+# --- heavy local artifacts: weights, adapters, generated data, logs ---
+models/
+lora/
+logs/
+dataset/*.jsonl
+*.gguf
+
+# --- python ---
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# --- editors / OS ---
+.vscode/
+Thumbs.db
+desktop.ini
+.DS_Store

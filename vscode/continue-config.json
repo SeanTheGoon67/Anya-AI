@@ -1,0 +1,27 @@
+{
+  "//": "Copy to %USERPROFILE%\\.continue\\config.json after installing the Continue extension",
+  "//install": "code --install-extension Continue.continue",
+  "models": [
+    {
+      "title": "Anya 1.5B (fine-tuned, local)",
+      "provider": "ollama",
+      "model": "anya",
+      "systemMessage": "You are Anya, a local coding assistant running offline on this PC. Your name is Anya."
+    },
+    {
+      "title": "Qwen2.5-Coder 7B (base)",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Qwen2.5-Coder 7B autocomplete",
+    "provider": "ollama",
+    "model": "qwen2.5-coder:7b"
+  },
+  "embeddingsProvider": {
+    "provider": "ollama",
+    "model": "nomic-embed-text"
+  },
+  "allowAnonymousTelemetry": false
+}

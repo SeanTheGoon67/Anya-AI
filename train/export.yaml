@@ -1,0 +1,13 @@
+### Merge the LoRA adapter into a full HF model, ready for Ollama import.
+### Run:  llamafactory-cli export train\export.yaml
+
+model_name_or_path: Qwen/Qwen2.5-Coder-1.5B-Instruct
+adapter_name_or_path: lora/qwen2.5-coder-1.5b-lora
+template: qwen
+finetuning_type: lora
+trust_remote_code: true
+
+export_dir: models/qwen2.5-coder-1.5b-merged
+export_size: 4
+export_device: cpu
+export_legacy_format: false

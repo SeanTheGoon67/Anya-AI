@@ -1,0 +1,50 @@
+### Qwen2.5-Coder-1.5B-Instruct QLoRA — tuned for 8 GB VRAM
+### Run:  llamafactory-cli train train\qlora_qwen2.5-coder-1.5b.yaml
+
+### model
+model_name_or_path: Qwen/Qwen2.5-Coder-1.5B-Instruct
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_target: all
+quantization_bit: 4          # QLoRA — keeps weights in 4-bit
+
+### dataset (alpaca format)
+dataset: all
+dataset_dir: dataset
+template: qwen
+cutoff_len: 512               # keep small; 8 GB card — 1024 caused VRAM paging
+overwrite_cache: true
+preprocessing_num_workers: 2
+
+### output
+output_dir: lora/qwen2.5-coder-1.5b-lora
+logging_steps: 5
+save_steps: 100
+plot_loss: true
+overwrite_output_dir: true
+
+### training (conservative to fit 8 GB)
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-4
+num_train_epochs: 2.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+bf16: true                    # RTX 5050 (Blackwell) supports bf16
+gradient_checkpointing: true  # trades speed for memory — required here
+ddp_timeout: 180000000
+
+### eval (disabled on 8 GB — eval pass allocates extra memory)
+# val_size: 0.05
+# per_device_eval_batch_size: 1
+# eval_strategy: steps
+# eval_steps: 100
+
+### memory helpers
+flash_attn: auto
+report_to: none
