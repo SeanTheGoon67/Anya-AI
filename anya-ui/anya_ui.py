@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1145,6 +1146,21 @@ def _search_block(query: str, results: list) -> str:
     return "\n".join(lines)
 
 
+def _log_exc(where: str) -> None:
+    """Append the current traceback to the log dir so a failed turn leaves a record.
+
+    Best-effort: a logging failure must never be the thing that breaks a reply.
+    """
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with (LOG_DIR / "anya-ui-errors.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"\n===== {stamp} [{where}] =====\n")
+            fh.write(traceback.format_exc())
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
 def _sources_block(text: str, sources: list) -> str:
     """A short Sources list for the links Anya was actually given.
 
@@ -1208,6 +1224,13 @@ def _is_fence_prefix(s: str) -> bool:
 # waiting rather than be dumped on screen: a write_file call carries a whole
 # file in it and is easily longer than a sentence.
 _TOOL_HINT = re.compile(r'"(?:name|tool|action|arguments|args|params)"\s*:')
+
+# A name+"arguments" shape, valid JSON or not. The 1.5B model likes to invent
+# tools on coding questions ({"name": "json_parse", "arguments": {"code": """..."""}})
+# and writes pseudo-JSON that json.loads rejects — so the shape is checked by hand.
+_TOOL_SHAPE = re.compile(
+    r'"(?:name|tool|action)"\s*:\s*"[A-Za-z_][A-Za-z0-9_.\-]{0,39}"'
+    r'[\s\S]{0,80}?"(?:arguments|args|params|parameters|input)"', re.I)
 
 
 def _project_brief(pid: str, goal: str, step: int, last: str, nudge: str = "") -> str:
@@ -1534,7 +1557,9 @@ def _looks_like_tool(obj) -> bool:
         try:
             obj = json.loads(obj)
         except Exception:                                         # noqa: BLE001
-            return False
+            # Pseudo-JSON the model often writes (triple-quoted strings, raw
+            # newlines): fall back to a shape test so a fake tool can't leak.
+            return bool(_TOOL_SHAPE.search(obj))
     if not isinstance(obj, dict):
         return False
     name = obj.get("name") or obj.get("tool") or obj.get("action")
@@ -1596,11 +1621,17 @@ class _ReplyFilter:
                 self._buf = self._buf[brace:]
                 continue
             rest = self._buf[brace:]
+            shape = bool(_TOOL_SHAPE.search(rest[:400]))
             obj, end = _extract_json(rest)
             if end >= 0 and (_any_tool(obj) or _looks_like_tool(obj)):
                 self._buf = rest[end:]          # a tool call — swallow it
                 self._after_call = True
                 continue
+            if shape:
+                # A tool-shaped object we can't parse cleanly (the model's
+                # pseudo-JSON). Hold it: flush() drops it instead of dumping the
+                # raw JSON on screen. This is the "json_parse leak".
+                return
             if end >= 0 or (len(rest) > 800 and not _TOOL_HINT.search(rest[:240])):
                 # not a tool call (or far too long to be one): show it
                 cut = end if end >= 0 else 1
@@ -2324,11 +2355,14 @@ class Handler(BaseHTTPRequestHandler):
         tools_on = web_on or (proj_on and not direct_code) or (lib_on and not direct_code)
         try:
             if web_on:
-                self._prefetch(msgs, message, sources, cache)
+                self._safe_prefetch(
+                    "web", lambda: self._prefetch(msgs, message, sources, cache))
             if proj_on and not direct_code:
-                self._project_prefetch(msgs, message)
+                self._safe_prefetch(
+                    "projects", lambda: self._project_prefetch(msgs, message))
             if lib_on and not direct_code:
-                self._library_prefetch(msgs, message)
+                self._safe_prefetch(
+                    "library", lambda: self._library_prefetch(msgs, message))
 
             rounds = (int(cfg().get("web_max_pages", 3)) if web_on else 0) \
                 + ((12 if proj_on else 0) if not direct_code else 0) \
@@ -2373,7 +2407,8 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 rounds -= 1
                 msgs.append({"role": "assistant", "content": text})
-                msgs.append({"role": "user", "content": self._run_tool(call, sources, cache)})
+                msgs.append({"role": "user",
+                             "content": self._safe_tool(call, sources, cache)})
 
             # Persist exactly what was shown, not the raw model output: a tool
             # call the filter swallowed must not reappear in the history.
@@ -2397,10 +2432,11 @@ class Handler(BaseHTTPRequestHandler):
                        "title": (get_session(sid) or {}).get("title", "")})
             _learn_async(message, visible)
         except Exception as exc:                                  # noqa: BLE001
+            _log_exc("chat")
             partial = "".join(streamed)
             if partial:
                 add_message(sid, "assistant", partial, 0, 0, profile)
-            self._sse({"type": "error", "message": str(exc)})
+            self._sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
 
     # -- web browsing ------------------------------------------------------
     def _generate(self, msgs: list, emit) -> tuple[str, int, float]:
@@ -2408,15 +2444,50 @@ class Handler(BaseHTTPRequestHandler):
 
         Returns the model's raw text (which chat() then inspects for a tool call);
         the user only ever sees what the filter let through.
+
+        If llama-server rejects the prompt as over its context window (HTTP 400),
+        retry once with just the system prompt and the latest turn, so a long
+        history can never turn a question into an empty red-boxed reply.
         """
         filt = _ReplyFilter(emit)
-        res = BACKEND.stream(msgs, filt.feed)
+        try:
+            res = BACKEND.stream(msgs, filt.feed)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400 or len(msgs) <= 2 or filt.emitted:
+                raise
+            _log_exc("generate:ctx-overflow")
+            res = BACKEND.stream([msgs[0], msgs[-1]], filt.feed)
         filt.flush()
         return res["text"], res["tokens"], res["tps"]
 
     def _tool_event(self, state: str, name: str, detail: str = "", ok: bool = True) -> None:
         self._sse({"type": "tool", "state": state, "name": name,
                    "detail": detail, "ok": ok})
+
+    def _safe_prefetch(self, label: str, fn) -> None:
+        """Run a deterministic prefetch, but never let it kill the whole reply.
+
+        A prefetch that throws (a tool module raising something other than its
+        own error type, a bad URL, a dead socket) used to bubble all the way to
+        chat()'s handler and replace the answer with an empty bubble and a red
+        box. A failed prefetch is a missing nicety, not a failed turn, so it is
+        logged and skipped.
+        """
+        try:
+            fn()
+        except Exception:                                         # noqa: BLE001
+            _log_exc(f"prefetch:{label}")
+
+    def _safe_tool(self, call: dict, sources: list, cache: dict) -> str:
+        """Run a tool call; if it blows up, tell Anya so she still answers."""
+        try:
+            return self._run_tool(call, sources, cache)
+        except Exception as exc:                                  # noqa: BLE001
+            _log_exc(f"tool:{call.get('name')}")
+            name = call.get("name") or "that tool"
+            return (f"The {name} step failed with: {exc}. Tell the user that part "
+                    "did not work and answer with what you already know — do not "
+                    "invent results.")
 
     def _fetch_page(self, url: str, sources: list, cache: dict) -> tuple:
         """Open one page, memoised for this turn. Returns (page, error, repeated)."""
@@ -2428,7 +2499,9 @@ class Handler(BaseHTTPRequestHandler):
         self._tool_event("start", "web_open", url)
         try:
             page = web.page_text(url, max_chars=cap)
-        except web.WebError as exc:
+        except Exception as exc:                                  # noqa: BLE001
+            if not isinstance(exc, web.WebError):
+                _log_exc(f"web_open:{url}")
             cache["fail"][url] = str(exc)
             self._tool_event("done", "web_open", str(exc), ok=False)
             return None, str(exc), False
@@ -2449,7 +2522,9 @@ class Handler(BaseHTTPRequestHandler):
         self._tool_event("start", "web_search", query)
         try:
             results = web.search(query, max_results=6)
-        except web.WebError as exc:
+        except Exception as exc:                                  # noqa: BLE001
+            if not isinstance(exc, web.WebError):
+                _log_exc(f"web_search:{query}")
             cache["fail"][key] = str(exc)
             self._tool_event("done", "web_search", str(exc), ok=False)
             return None, str(exc), False
@@ -2619,7 +2694,9 @@ class Handler(BaseHTTPRequestHandler):
             self._tool_event("start", "learn_repo", repo)
             try:
                 man = learn.fetch_repo(repo, on_event=self._library_log)
-            except learn.LearnError as exc:
+            except Exception as exc:                              # noqa: BLE001
+                if not isinstance(exc, learn.LearnError):
+                    _log_exc(f"learn_repo:{repo}")
                 self._tool_event("done", "learn_repo", str(exc), ok=False)
                 return f"Reading that repo failed: {exc}"
             self._tool_event("done", "learn_repo",
