@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -55,6 +56,20 @@ import learn                                                     # noqa: E402
 import site_tools                                                # noqa: E402
 import voice                                                     # noqa: E402
 import memory                                                    # noqa: E402
+import remote                                                    # noqa: E402
+import updater                                                   # noqa: E402
+import qr                                                        # noqa: E402
+
+ANYA_VERSION = "0.17.0"
+
+
+def anya_version() -> str:
+    """The version Anya reports — from VERSION if present, else the constant."""
+    try:
+        v = (PROJECT / "VERSION").read_text(encoding="utf-8").strip()
+        return v or ANYA_VERSION
+    except Exception:                                             # noqa: BLE001
+        return ANYA_VERSION
 
 SYSTEM_PROMPT = (
     "You are Anya, a friendly assistant that runs entirely on the user's own PC. "
@@ -65,6 +80,9 @@ SYSTEM_PROMPT = (
     "- If the user asks for code, or code is clearly the right answer, write it in a "
     "fenced code block with the language tag, with a short explanation around it.\n"
     "- Keep replies concise and readable. Match the user's tone.\n"
+    "- Answer as Anya, in your own voice. Never write the user's lines for them, "
+    "never invent a question-and-answer dialogue, and never role-play both sides of "
+    "the conversation.\n"
     "- Only output raw code with no explanation when the user explicitly asks for "
     "code only.\n\n"
     "You are especially good at Python and Kotlin / Jetpack Compose (Android), "
@@ -237,6 +255,10 @@ DEFAULTS: dict = {
     "memory_dir": r"S:\anya-memory",  # where the facts file lives
     "memory_inject": 30,             # how many facts to feed her per message
     "gh_path": r"C:\\Users\\Administrator\\AppData\\Local\\Temp\\ghbin\\bin\\gh.exe",
+    "remote_enabled": False,         # let a phone reach this UI (binds all interfaces)
+    "remote_token": "",              # shared key for the phone; generated on first use
+    "remote_tunnel": "off",          # "off" | "cloudflare" (quick tunnel, no account)
+    "remote_tunnel_on_start": False, # raise the tunnel automatically with the UI
     "measured": {},                  # filled in at runtime: profile -> {vram_mb, tps}
 }
 
@@ -481,6 +503,78 @@ def cfg() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# phone / remote access + self-update helpers
+# ---------------------------------------------------------------------------
+
+def remote_token() -> str:
+    """The shared key a phone must present. Generated on first use."""
+    tok = str(cfg().get("remote_token") or "").strip()
+    if not tok:
+        import secrets
+        tok = secrets.token_urlsafe(9)
+        with _cfg_lock:
+            _config["remote_token"] = tok
+        save_config()
+    return tok
+
+
+def remote_urls() -> dict:
+    """Base URLs someone could use to reach this UI from a phone."""
+    port = int(cfg().get("port", 8091))
+    ips = remote.lan_ips()
+    lan = [f"http://{ip}:{port}" for ip in ips]
+    ts = remote.tailscale_ip()
+    return {
+        "port": port,
+        "lan": lan,
+        "lan_url": lan[0] if lan else "",
+        "tailscale_url": f"http://{ts}:{port}" if ts else "",
+    }
+
+
+def remote_status() -> dict:
+    c = cfg()
+    u = remote_urls()
+    tun = remote.tunnel_status()
+    best = tun.get("url") or u["tailscale_url"] or u["lan_url"]
+    return {
+        "enabled": bool(c.get("remote_enabled", False)),
+        "host": c.get("host", "127.0.0.1"),
+        "port": u["port"],
+        "token": remote_token(),
+        "lan_urls": u["lan"],
+        "lan_url": u["lan_url"],
+        "tailscale_url": u["tailscale_url"],
+        "tunnel": c.get("remote_tunnel", "off"),
+        "tunnel_on_start": bool(c.get("remote_tunnel_on_start", False)),
+        "tunnel_running": bool(tun.get("running")),
+        "tunnel_url": tun.get("url", ""),
+        "tunnel_error": tun.get("error", ""),
+        "cloudflared": bool(tun.get("installed")),
+        "phone_url": best,
+    }
+
+
+def restart_soon(delay: float = 1.2) -> None:
+    """Relaunch the UI in a fresh process (used after a settings/update change)."""
+    def _go() -> None:
+        time.sleep(delay)
+        try:
+            BACKEND.stop()
+        except Exception:                                         # noqa: BLE001
+            pass
+        try:
+            cmd = [sys.executable, str(ROOT / "anya_ui.py")] + sys.argv[1:]
+            subprocess.Popen(cmd, cwd=str(PROJECT), close_fds=True,
+                             creationflags=0x00000008 | 0x00000200)  # detached
+        except Exception:                                         # noqa: BLE001
+            pass
+        time.sleep(0.4)
+        os._exit(0)
+    threading.Thread(target=_go, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # machine stats (no third-party libs)
 # ---------------------------------------------------------------------------
 
@@ -632,6 +726,15 @@ def delete_session(sid: str) -> None:
     with _db_lock, db() as conn:
         conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
         conn.execute("DELETE FROM sessions WHERE id=?", (sid,))
+
+
+def clear_all_sessions() -> int:
+    """Delete every saved conversation. Returns how many were removed."""
+    with _db_lock, db() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM sessions")
+    return int(n)
 
 
 def rename_session(sid: str, title: str) -> None:
@@ -1404,6 +1507,85 @@ def wants_direct_code(message: str) -> bool:
     return bool(_WRITE_CODE.search(message or ""))
 
 
+# --- what a tool call has to be justified by --------------------------------
+# A 1.5B model with no real function-calling will invent tool calls on ordinary
+# questions: it answers "explain coroutines" with a web_open to a GitHub URL, or
+# "write a data class" with a write_file into whatever project is open, or a
+# web_search whose query is the literal placeholder "…". Those used to run and
+# wreck the reply. So a tool is only acted on when the user's own words asked for
+# that kind of work. When they didn't, she is nudged to answer in plain text.
+
+# A "work on my app" question needs a project noun *and* a verb that acts on it.
+_PROJECT_NOUN = re.compile(
+    r"\b(app|application|project|apk|android|kotlin|java|gradle|compose|screen"
+    r"|layout|activity|button|widget|ui|module|file|files|code|build|emulator"
+    r"|manifest|theme|icon|repo|repository|bug|error|crash|test|tests)\b",
+    re.I,
+)
+_PROJECT_VERB = re.compile(
+    r"\b(add|adding|change|changing|edit|update|modify|fix|fixing|create|creating"
+    r"|make|making|write|writing|build|building|rebuild|run|running|install"
+    r"|remove|delete|rename|move|refactor|implement|improve|redesign|replace"
+    r"|start|continue|finish|polish|list|show|open|test|launch|generate|scaffold"
+    r"|crash|crashes|crashing|broke|broken|fails|failing|debug|troubleshoot)\b",
+    re.I,
+)
+
+
+def _wants_web_tools(message: str) -> bool:
+    """Whether this message lets the model reach the internet itself.
+
+    Either she was asked to search ("search the web for X", "what's the latest
+    version") or the user pasted a link worth opening.
+    """
+    return web.wants_search(message) or bool(web.find_urls(message, limit=2))
+
+
+def _wants_project_tools(message: str) -> bool:
+    """Whether this message is about working on a project or app."""
+    msg = message or ""
+    # "make me an app called X" / "build the apk" are project work even though
+    # they also trip the "write me code" pattern — check them first.
+    if projects.wants_build(msg) or projects.new_project_name(msg):
+        return True
+    if wants_direct_code(msg):
+        return False          # a one-off code block, not the open project
+    return bool(_PROJECT_NOUN.search(msg) and _PROJECT_VERB.search(msg))
+
+
+# "Where is X in my code?" wording — the sign the user means *their saved code*
+# rather than a general question that merely mentions a language.
+_RECALL_INTENT = re.compile(
+    r"(?i)\b(find|search|look\s?up|where(?:'s| is| are| did)|locate|show me"
+    r"|my (?:code|repo|repos|project|projects|library|files|file|source|sources)"
+    r"|the (?:repo|repos|library|files|source)|saved (?:code|repo|repos|files)"
+    r"|in my (?:repo|repos|code|project|library)|from (?:my|the) (?:repo|library)"
+    r"|we (?:wrote|have)|did i (?:write|save))\b")
+
+
+def _wants_library_tools(message: str) -> bool:
+    """Whether this message should search or read the saved repos."""
+    msg = message or ""
+    if learn.wants_repo(msg):
+        return True
+    if web.wants_search(msg):
+        return False          # a live-info question is for the web, not the library
+    # Automatic recall is for "where in my saved code is X". A general
+    # "explain coroutines" question is not a repo lookup: dumping an unrelated
+    # Kotlin file on a 1.5B model just makes it repeat the file instead of
+    # answering. So recall needs a sign the user means their own saved code.
+    return _wants_code_context(msg) and bool(_RECALL_INTENT.search(msg))
+
+
+def _tool_allowed(name: str, web_ok: bool, proj_ok: bool, lib_ok: bool) -> bool:
+    """Whether one model-emitted tool call is justified by this turn's message."""
+    if name in ("web_search", "web_open"):
+        return web_ok
+    if name in ("recall", "learn_repo"):
+        return lib_ok
+    return proj_ok           # every other tool is a project action
+
+
 def library_enabled() -> bool:
     """Whether Anya may read GitHub repos into her library and recall them."""
     return bool(cfg().get("library_enabled", True))
@@ -1665,6 +1847,25 @@ class _ReplyFilter:
 # HTTP layer
 # ---------------------------------------------------------------------------
 
+_UNLOCK_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Anya</title>
+<style>
+ body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0c10;color:#e8eaf0;
+      font-family:-apple-system,"Segoe UI",Roboto,sans-serif}
+ .box{max-width:340px;padding:28px;background:#12141b;border:1px solid #232733;border-radius:16px;text-align:center}
+ h1{margin:0 0 6px;font-size:19px}p{margin:0 0 18px;color:#8a92a6;font-size:14px;line-height:1.5}
+ input{width:100%;box-sizing:border-box;padding:11px 13px;border-radius:10px;border:1px solid #2d3342;
+       background:#171a23;color:#e8eaf0;font-size:15px;outline:none}
+ button{margin-top:12px;width:100%;padding:11px;border:none;border-radius:10px;cursor:pointer;
+        background:linear-gradient(135deg,#7c5cff,#6d4dfa);color:#fff;font-size:15px;font-weight:600}
+</style></head><body><form class="box" method="get" action="/">
+ <h1>Anya is locked</h1>
+ <p>This copy is shared on your network. Paste the access key from the desktop app to continue.</p>
+ <input name="k" placeholder="access key" autofocus autocomplete="off">
+ <button type="submit">Unlock</button>
+</form></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AnyaUI/1.0"
     protocol_version = "HTTP/1.1"
@@ -1743,10 +1944,64 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(f"data: {json.dumps(obj)}\n\n".encode("utf-8"))
         self.wfile.flush()
 
+    # -- access control (phone access) ------------------------------------
+    def _from_localhost(self) -> bool:
+        ip = (self.client_address[0] if self.client_address else "") or ""
+        return ip in ("127.0.0.1", "::1", "localhost", "")
+
+    def _given_key(self) -> str:
+        hdr = self.headers.get("X-Anya-Key") or ""
+        if hdr:
+            return hdr.strip()
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "anya_key":
+                return v.strip()
+        if "?" in self.path:
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            return (q.get("k") or [""])[0]
+        return ""
+
+    def _authorised(self) -> bool:
+        """Open to this PC; a phone needs the shared key when remote access is on."""
+        if not cfg().get("remote_enabled"):
+            return True
+        if self._from_localhost():
+            return True
+        return self._given_key() == remote_token()
+
+    def _deny(self, path: str) -> None:
+        if path.startswith("/api/"):
+            return self._json({"error": "unauthorized", "need_key": True}, 401)
+        return self._text(_UNLOCK_HTML, 401, "text/html; charset=utf-8")
+
+    def _maybe_set_key_cookie(self) -> bool:
+        """If the URL carried the key, remember it and clean the address bar."""
+        if self._from_localhost() or "?" not in self.path:
+            return False
+        q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+        if (q.get("k") or [""])[0] != remote_token():
+            return False
+        keep = [(k, v) for k, vals in q.items() if k != "k" for v in vals]
+        clean = self.path.split("?", 1)[0]
+        if keep:
+            clean += "?" + urllib.parse.urlencode(keep)
+        self.send_response(302)
+        self.send_header("Location", clean)
+        self.send_header("Set-Cookie",
+                         f"anya_key={remote_token()}; Path=/; Max-Age=31536000; SameSite=Lax")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
     # -- routes -----------------------------------------------------------
     def do_GET(self) -> None:                                     # noqa: N802
         path = self.path.split("?")[0]
         try:
+            if path != "/api/health" and not self._authorised():
+                return self._deny(path)
+            if self._maybe_set_key_cookie():
+                return
             if path in ("/", "/index.html"):
                 if not INDEX_HTML.exists():
                     return self._text("index.html missing", 500)
@@ -1778,7 +2033,48 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "no avatar"}, 404)
 
             if path == "/api/status":
-                return self._json(BACKEND.status())
+                st = BACKEND.status()
+                st["version"] = anya_version()
+                st["remote"] = remote_status()
+                st["update"] = updater.cached()
+                return self._json(st)
+
+            if path == "/api/health":
+                return self._json({"ok": True, "version": anya_version()})
+
+            if path == "/api/remote":
+                return self._json(remote_status())
+
+            if path == "/api/remote/qr.png":
+                q = {}
+                if "?" in self.path:
+                    q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                url = (q.get("url") or [""])[0] or remote_status()["phone_url"]
+                try:
+                    scale = max(3, min(14, int((q.get("scale") or ["6"])[0])))
+                except Exception:                                 # noqa: BLE001
+                    scale = 6
+                try:
+                    png = qr.png(url, scale=scale, border=4)
+                except Exception as exc:                          # noqa: BLE001
+                    return self._json({"error": f"qr failed: {exc}"}, 400)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return self.wfile.write(png)
+
+            if path == "/api/update":
+                q = {}
+                if "?" in self.path:
+                    q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                force = (q.get("force") or ["0"])[0] in ("1", "true", "yes")
+                return self._json(updater.check(str(cfg().get("github_token") or ""),
+                                                force=force))
+
+            if path == "/api/version":
+                return self._json({"version": anya_version()})
 
             if path == "/api/sessions":
                 q = ""
@@ -1886,6 +2182,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:                                  # noqa: N802
         path = self.path.split("?")[0]
+        if path == "/api/sessions":
+            return self._json({"ok": True, "deleted": clear_all_sessions()})
         m = re.match(r"^/api/sessions/([0-9a-f]+)$", path)
         if m:
             delete_session(m.group(1))
@@ -2046,6 +2344,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         self._body()            # always drain the body so keep-alive stays in sync
         try:
+            if not self._authorised():
+                return self._deny(path)
             if path == "/api/chat":
                 return self.chat()
             if path == "/api/profile":
@@ -2259,16 +2559,63 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": str(exc)}, 400)
                 return self._json({"text": text})
 
-            if path == "/api/voice/tts":
+            if path == "/api/remote":
                 body = self._body()
-                try:
-                    wav = voice.synthesize(
-                        str(body.get("text") or ""),
-                        voice=str(cfg().get("voice_piper_voice",
-                                            "en_US-lessac-medium")))
-                except voice.VoiceError as exc:
-                    return self._json({"error": str(exc)}, 400)
-                return self._wav(wav)
+                restart = False
+                with _cfg_lock:
+                    if "enabled" in body:
+                        want = bool(body["enabled"])
+                        if want != bool(_config.get("remote_enabled")):
+                            restart = True
+                        _config["remote_enabled"] = want
+                        _config["host"] = "0.0.0.0" if want else "127.0.0.1"
+                    if "remote_tunnel_on_start" in body:
+                        _config["remote_tunnel_on_start"] = bool(body["remote_tunnel_on_start"])
+                    if "tunnel" in body:
+                        _config["remote_tunnel"] = str(body["tunnel"]) or "off"
+                    if body.get("rotate_token"):
+                        import secrets
+                        _config["remote_token"] = secrets.token_urlsafe(9)
+                    tunnel = _config.get("remote_tunnel", "off")
+                save_config()
+                if "tunnel" in body or body.get("rotate_token"):
+                    if tunnel == "cloudflare":
+                        remote.start_tunnel(int(cfg().get("port", 8091)))
+                    else:
+                        remote.stop_tunnel()
+                res = remote_status()
+                res["restart_required"] = restart
+                if restart and body.get("restart", True):
+                    res["restarting"] = True
+                    restart_soon()
+                return self._json(res)
+
+            if path == "/api/remote/tunnel":
+                body = self._body()
+                action = str(body.get("action") or "")
+                if action == "install":
+                    try:
+                        path_to = remote.download_cloudflared()
+                        return self._json({"ok": True, "path": path_to})
+                    except Exception as exc:                      # noqa: BLE001
+                        return self._json({"ok": False, "error": str(exc)}, 400)
+                if action == "start":
+                    return self._json(remote.start_tunnel(int(cfg().get("port", 8091))))
+                if action == "stop":
+                    return self._json(remote.stop_tunnel())
+                return self._json(remote.tunnel_status())
+
+            if path == "/api/update/apply":
+                body = self._body()
+                res = updater.apply(str(cfg().get("github_token") or ""))
+                if res.get("ok") and body.get("restart", True):
+                    res["restarting"] = True
+                    restart_soon(1.8)
+                return self._json(res)
+
+            if path == "/api/restart":
+                restart_soon()
+                return self._json({"ok": True, "restarting": True})
 
             return self._json({"error": "no such route"}, 404)
         except Exception as exc:                                  # noqa: BLE001
@@ -2349,35 +2696,50 @@ class Handler(BaseHTTPRequestHandler):
 
         sources: list[dict] = []
         cache: dict = {"search": {}, "open": {}, "fail": {}}
-        # A plain "write me a code block" request should get code, not a tour of the
-        # saved repos or a fresh Gradle project — bypass project/library tools for it.
-        direct_code = wants_direct_code(message)
-        tools_on = web_on or (proj_on and not direct_code) or (lib_on and not direct_code)
+        # Only the work the user's own words justify. A 1.5B model invents tool
+        # calls on ordinary questions ("write me a data class" -> a write_file
+        # into the open project), so these flags decide both which prefetch runs
+        # and which model-emitted tool call is allowed to act.
+        web_ok = web_on and _wants_web_tools(message)
+        proj_ok = proj_on and _wants_project_tools(message)
+        lib_ok = lib_on and not wants_direct_code(message) \
+            and _wants_library_tools(message)
+        tools_on = web_ok or proj_ok or lib_ok
         try:
-            if web_on:
+            if web_ok:
                 self._safe_prefetch(
                     "web", lambda: self._prefetch(msgs, message, sources, cache))
-            if proj_on and not direct_code:
+            if proj_ok:
                 self._safe_prefetch(
                     "projects", lambda: self._project_prefetch(msgs, message))
-            if lib_on and not direct_code:
+            if lib_ok:
                 self._safe_prefetch(
                     "library", lambda: self._library_prefetch(msgs, message))
 
-            rounds = (int(cfg().get("web_max_pages", 3)) if web_on else 0) \
-                + ((12 if proj_on else 0) if not direct_code else 0) \
-                + ((4 if lib_on else 0) if not direct_code else 0)
+            rounds = (int(cfg().get("web_max_pages", 3)) if web_ok else 0) \
+                + (12 if proj_ok else 0) \
+                + (4 if lib_ok else 0)
             seen: dict = {}
             nudged_fake = False
             while True:
-                if tools_on:
-                    text, tokens, tps = self._generate(msgs, emit)
-                    call = _any_tool(text)
-                else:
-                    # Still run through the filter so a stray tool-shaped JSON
-                    # object can never leak to the screen, but never act on it.
-                    text, tokens, tps = self._generate(msgs, emit)
-                    call = None
+                # Always run output through the filter so a stray tool-shaped JSON
+                # object can never leak to the screen, but only act on one when
+                # this message justified it.
+                text, tokens, tps = self._generate(msgs, emit)
+                call = _any_tool(text) if tools_on else None
+                if call and not _tool_allowed(call.get("name", ""),
+                                              web_ok, proj_ok, lib_ok):
+                    # Not justified by this question — do not run it. Nudge once
+                    # for a plain answer; if she does it again, stop and fall back.
+                    if nudged_fake:
+                        break
+                    nudged_fake = True
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content":
+                                 "(That tool is not relevant to this question and you "
+                                 "must not call it. Do not call any tool at all now. "
+                                 "Answer the user directly in plain text.)"})
+                    continue
                 if not call:
                     # The filter showed an ordinary answer — unless it swallowed a
                     # *hallucinated* tool call (a fake name the app can't run), in
@@ -2868,11 +3230,12 @@ def main() -> int:
         _config["profile"] = args.profile
 
     host, port = _config["host"], int(_config["port"])
+    bind = "0.0.0.0" if _config.get("remote_enabled") else host
 
-    if ui_already_running(host, port):
-        print(f"[=] Anya's UI is already running on http://{host}:{port}")
+    if ui_already_running("127.0.0.1", port):
+        print(f"[=] Anya's UI is already running on http://127.0.0.1:{port}")
         if not args.no_open:
-            open_browser(f"http://{host}:{port}")
+            open_browser(f"http://127.0.0.1:{port}")
         return 0
 
     db_init()
@@ -2885,21 +3248,29 @@ def main() -> int:
                          daemon=True).start()
     threading.Thread(target=idle_watchdog, daemon=True).start()
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    if _config.get("remote_enabled") and _config.get("remote_tunnel_on_start") \
+            and _config.get("remote_tunnel") == "cloudflare":
+        threading.Thread(target=lambda: (time.sleep(2), remote.start_tunnel(port)),
+                         daemon=True).start()
+
+    httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.daemon_threads = True
-    url = f"http://{host}:{port}"
-    print(f"[+] Anya's UI  ->  {url}")
+    print(f"[+] Anya's UI  ->  http://127.0.0.1:{port}")
     print(f"    backend={_config['backend']}  profile={_config['profile']}")
+    if _config.get("remote_enabled"):
+        for u in remote_urls()["lan"]:
+            print(f"    phone (this Wi-Fi)  ->  {u}?k={remote_token()}")
     print("    press Ctrl+C to stop the UI (the model is stopped with it)")
 
     if not args.no_open:
-        threading.Thread(target=lambda: (time.sleep(0.6), open_browser(url)),
+        threading.Thread(target=lambda: (time.sleep(0.6), open_browser(f"http://127.0.0.1:{port}")),
                          daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[.] shutting down")
     finally:
+        remote.stop_tunnel()
         BACKEND.stop()
     return 0
 

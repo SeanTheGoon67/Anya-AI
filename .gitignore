@@ -12,6 +12,9 @@ logs/
 dataset/*.jsonl
 *.gguf
 
+# --- third-party helper binaries downloaded on demand (cloudflared tunnel) ---
+tools/cloudflared/
+
 # --- python ---
 __pycache__/
 **/__pycache__/

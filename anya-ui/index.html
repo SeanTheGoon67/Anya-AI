@@ -100,7 +100,11 @@ button{cursor:pointer;border:none;background:none}
 }
 .search input::placeholder{color:var(--dim)}
 .search input:focus{border-color:var(--accent);background:var(--panel3)}
-.sessions{flex:1;overflow-y:auto;padding:2px 8px 12px}
+.side-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 14px 8px;min-height:22px}
+.sess-count{font-size:11.5px;color:var(--dim)}
+.link-btn{font-size:11.5px;color:var(--dim);padding:3px 8px;border-radius:7px;white-space:nowrap;transition:background .14s,color .14s}
+.link-btn:hover{color:var(--bad);background:var(--danger-soft)}
+.sessions{flex:1;min-height:0;overflow-y:auto;padding:2px 8px 12px}
 .sessions .hint{color:var(--dim);font-size:12.5px;padding:14px 10px;text-align:center}
 .session{
   display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:9px;
@@ -280,10 +284,10 @@ button{cursor:pointer;border:none;background:none}
 .panel.show{transform:none;box-shadow:-20px 0 60px rgba(0,0,0,.5)}
 .panel-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border)}
 .panel-head h2{margin:0;font-size:15.5px;font-weight:650}
-.tabs{display:flex;gap:4px;padding:12px 18px 0}
-.tab{padding:7px 13px;border-radius:8px;font-size:13.5px;color:var(--muted);font-weight:560}
+.tabs{display:flex;flex-wrap:wrap;gap:5px;padding:12px 18px;border-bottom:1px solid var(--border)}
+.tab{padding:6px 11px;border-radius:8px;font-size:13px;color:var(--muted);font-weight:560;white-space:nowrap}
 .tab.on{background:var(--accent-soft);color:var(--accent2)}
-.panel-body{flex:1;overflow-y:auto;padding:16px 18px 26px}
+.panel-body{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:16px 18px 26px}
 .sec{margin-bottom:22px}
 /* sticky section nav ("slider") — jump between sections without them running off */
 .sec-nav{
@@ -466,6 +470,69 @@ input[type=range]::-webkit-slider-thumb{
   border:2px solid var(--panel);box-shadow:0 0 0 1px var(--border2);transition:transform .12s}
 .accent-swatches .swatch:hover{transform:scale(1.14)}
 .accent-swatches .swatch.on{box-shadow:0 0 0 2px var(--text)}
+
+/* ------------------------------------------------ phone & updates (settings) */
+.qrbox{
+  margin:0 auto;width:max-content;padding:12px;border-radius:14px;background:#fff;
+  box-shadow:0 6px 22px rgba(0,0,0,.35);
+}
+.qrbox img{display:block;width:220px;height:220px;image-rendering:pixelated}
+.mono-in{font-family:var(--mono);font-size:12.5px}
+.update-ok{color:var(--ok)}
+.update-new{color:var(--accent2);font-weight:600}
+
+/* ------------------------------------------------ the little drawer scrim */
+.scrim{
+  position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;
+  transition:opacity .2s;z-index:35;
+}
+.scrim.show{opacity:1;pointer-events:auto}
+
+/* ================================================================ mobile ==
+   Below ~860px Anya turns into an app: the sidebar becomes a drawer, the
+   top bar drops its labels, the composer sits clear of the phone's home bar,
+   and every tap target is comfortably thumb-sized. */
+@media (max-width:860px){
+  .sidebar{
+    position:fixed;top:0;left:0;height:100vh;height:100dvh;width:84vw;max-width:330px;
+    z-index:40;margin-left:0;
+    transition:left .24s cubic-bezier(.4,0,.2,1);box-shadow:none;
+  }
+  .sidebar:not(.hidden){left:0;box-shadow:24px 0 60px rgba(0,0,0,.55)}
+  .sidebar.hidden{left:-100vw;box-shadow:none}
+  .wrap{max-width:100%;padding:16px 13px 20px}
+  .msg{gap:11px;margin-bottom:20px}
+  .msg .av{width:28px;height:28px;font-size:12px}
+  .empty{padding:7vh 16px 0}
+  .empty h1{font-size:23px}
+  .empty p{font-size:13.5px}
+  .panel{width:100vw;max-width:100vw}
+  .panel-body{padding:14px 14px 30px}
+  .sec-nav{margin:-14px -14px 14px;padding:11px 14px}
+  .sessions .session{padding:11px 10px}
+  .session .x{opacity:.55}
+}
+@media (max-width:620px){
+  .topbar{padding:9px 12px;padding-top:calc(9px + env(safe-area-inset-top))}
+  .top-right{gap:6px;min-width:0;overflow:hidden}
+  .pill{padding:8px 9px;border-radius:10px}
+  .pill .lbl{display:none}
+  .icon-btn{width:36px;height:36px}
+  .chat-title{font-size:14px}
+  .composer{padding:0 11px 12px;padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  .composer-in{padding:8px 8px 8px 14px;gap:8px}
+  .composer textarea{font-size:16px}     /* 16px stops iOS zooming on focus */
+  .send,.mic{width:38px;height:38px}
+  .foot-note{font-size:11px}
+  .qrbox img{width:200px;height:200px}
+}
+@media (max-width:400px){
+  .pill{padding:7px 8px}
+  .empty .logo{width:58px;height:58px;border-radius:18px}
+  .qrbox img{width:172px;height:172px}
+}
+body{overscroll-behavior-y:none}
+.stream{-webkit-overflow-scrolling:touch}
 </style>
 <script>
 /* Apply the saved theme before anything paints, so there's no flash of the
@@ -501,6 +568,10 @@ input[type=range]::-webkit-slider-thumb{
     </div>
     <button class="new-chat" id="newChat"><span style="font-size:16px">＋</span> New chat</button>
     <div class="search"><input id="search" placeholder="Search chats…"></div>
+    <div class="side-tools">
+      <span class="sess-count" id="sessCount"></span>
+      <button class="link-btn" id="clearChats" hidden>Clear all chats</button>
+    </div>
     <div class="sessions" id="sessions"></div>
     <div class="side-foot">
       <div class="meter-row"><span>VRAM</span><span id="vramTxt">–</span></div>
@@ -517,6 +588,9 @@ input[type=range]::-webkit-slider-thumb{
       <button class="icon-btn" id="toggleSidebar" title="Toggle sidebar">☰</button>
       <div class="chat-title" id="chatTitle">New chat</div>
       <div class="top-right">
+        <button class="pill" id="updateBtn" title="An update is available" style="display:none">
+          <span>⬆</span><span class="lbl">Update</span>
+        </button>
         <button class="pill" id="themeBtn" title="Themes &amp; appearance"><span>🎨</span><span class="lbl">Theme</span></button>
         <button class="pill" id="exportBtn" title="Download this chat as Markdown" style="display:none">⤓ Export</button>
         <button class="pill" id="webBtn" title="Let Anya browse the web">
@@ -571,6 +645,7 @@ input[type=range]::-webkit-slider-thumb{
 </div>
 
 <!-- ============ slide-over ============ -->
+<div class="scrim" id="sideScrim"></div>
 <div class="backdrop" id="backdrop"></div>
 <div class="panel" id="panel">
   <div class="panel-head">
@@ -889,6 +964,64 @@ input[type=range]::-webkit-slider-thumb{
         <div class="note" id="saveNote"></div>
         <div class="note" id="aboutLine" style="margin-top:10px"></div>
       </div>
+
+      <div class="sec" id="secRemote">
+        <label>Phone access</label>
+        <label class="switch">
+          <input type="checkbox" id="remoteEnabled">
+          <span>Let my phone reach Anya<span class="sub">Binds to your whole network and asks for the access key below. Turns on the drawer-friendly phone layout.</span></span>
+        </label>
+        <div class="row" style="margin-top:12px">
+          <div class="field">
+            <span>When away from home</span>
+            <select id="remoteTunnel">
+              <option value="off">Off — home Wi-Fi only</option>
+              <option value="cloudflare">Cloudflare quick tunnel (no account)</option>
+            </select>
+          </div>
+        </div>
+        <label class="switch" style="margin-top:8px">
+          <input type="checkbox" id="remoteTunnelStart">
+          <span>Raise the tunnel automatically when Anya starts<span class="sub">Only used with the Cloudflare option above.</span></span>
+        </label>
+        <div class="row2" style="margin-top:12px">
+          <button class="btn tight" id="remoteApply">Apply</button>
+          <button class="btn tight" id="remoteTunnelBtn">Start tunnel</button>
+        </div>
+        <div class="note" id="remoteNote"></div>
+        <div id="remoteInfo" style="display:none;margin-top:14px">
+          <div class="qrbox"><img id="remoteQr" alt="Scan to open Anya on your phone"></div>
+          <div class="field" style="margin-top:12px">
+            <span>Open on your phone</span>
+            <input id="remoteUrl" class="mono-in" readonly spellcheck="false">
+          </div>
+          <div class="field" style="margin-top:8px">
+            <span>Access key</span>
+            <input id="remoteToken" class="mono-in" readonly spellcheck="false">
+          </div>
+          <div class="row2" style="margin-top:10px">
+            <button class="btn tight" id="remoteCopy">Copy link</button>
+            <button class="btn tight" id="remoteRotate">New key</button>
+          </div>
+          <div class="tip">Scan the code with your phone's camera while you're on the same
+            Wi-Fi. Keep the key private — anyone who has it can talk to Anya. Turn the tunnel on
+            to reach her from anywhere; it makes a temporary <b>trycloudflare.com</b> address.</div>
+        </div>
+      </div>
+
+      <div class="sec" id="secUpdate">
+        <label>Updates</label>
+        <div class="note" id="updateNote">Not checked yet.</div>
+        <div class="row2" style="margin-top:10px">
+          <button class="btn tight" id="updateCheck">Check for updates</button>
+          <button class="btn tight primary" id="updateApply" style="display:none">Update now</button>
+        </div>
+        <div class="log" id="updateLog" style="display:none"></div>
+        <div class="tip">For a copy cloned from GitHub this does a fast-forward
+          <code>git pull</code>; otherwise it downloads the latest release and lays the
+          new source over this folder — never touching your config, chats, models, LoRA
+          adapters, training data or library. Anya restarts afterwards.</div>
+      </div>
     </div>
 
     <!-- library tab -->
@@ -1087,6 +1220,9 @@ const jpost = (p,b)=>api(p,{method:"POST",headers:{"Content-Type":"application/j
 
 /* -------------------------------------------------------------- rendering */
 const streamEl=$("#stream");
+/* The starter questions in the welcome screen, captured once so a re-rendered
+   empty state (New chat) shows the same buttons instead of an empty grid. */
+const CHIPS_HTML = ($("#chips") || {}).innerHTML || "";
 
 function msgNode(role, text){
   const wrap=document.createElement("div");
@@ -1139,10 +1275,11 @@ streamEl.addEventListener("click",e=>{
   const code=btn.closest(".code").querySelector("code").textContent;
   navigator.clipboard.writeText(code).then(()=>{btn.textContent="Copied";setTimeout(()=>btn.textContent="Copy",1200);});
 });
-$("#chips").addEventListener("click",e=>{
+streamEl.addEventListener("click",e=>{
   const b=e.target.closest("[data-q]");
   if(!b) return;
   $("#input").value=b.dataset.q; autosize(); send();
+  closeDrawer();
 });
 
 function renderThread(){ 
@@ -1152,6 +1289,7 @@ function renderThread(){
   empty.innerHTML='<div class="logo"><img src="/anya.png" alt="Anya"></div><h1>Hey, I\'m Anya.</h1><p>I live on this PC — no internet, no cloud. Chat with me, or ask for code.</p>'+
     '<div class="chips" id="chips2"></div>';
   streamEl.appendChild(empty);
+  const c2=empty.querySelector("#chips2"); if(c2) c2.innerHTML=CHIPS_HTML;
   if(!state.messages.length) return;
   hideEmpty();
   for(const m of state.messages) addMsg(m.role,m.content);
@@ -1162,6 +1300,9 @@ async function loadSessions(q=""){
   try{
     const d=await api("/api/sessions"+(q?("?q="+encodeURIComponent(q)):""));
     const box=$("#sessions");
+    const n=d.sessions.length;
+    $("#sessCount").textContent = n ? (n+" chat"+(n===1?"":"s")) : "";
+    $("#clearChats").hidden = !n;
     if(!d.sessions.length){ box.innerHTML='<div class="hint">'+(q?"No matches.":"Past chats will appear here.")+"</div>"; return; }
     box.innerHTML="";
     for(const s of d.sessions){
@@ -1199,6 +1340,7 @@ async function openSession(id){
     $("#chatTitle").textContent=s.title||"Chat";
     $("#exportBtn").style.display="";
     renderThread(); loadSessions($("#search").value.trim());
+    closeDrawer();
   }catch(e){ toast(e.message,true); }
 }
 
@@ -1208,8 +1350,18 @@ function newChat(){
   $("#exportBtn").style.display="none";
   renderThread(); loadSessions($("#search").value.trim());
   $("#input").focus();
+  closeDrawer();
 }
 $("#newChat").addEventListener("click",newChat);
+$("#clearChats").addEventListener("click",async()=>{
+  if(state.streaming) return toast("Wait for her to finish first",true);
+  if(!confirm("Delete every saved chat? This can't be undone.")) return;
+  try{
+    const r=await api("/api/sessions",{method:"DELETE"});
+    newChat();
+    toast("Cleared "+(r.deleted||0)+" chat"+((r.deleted===1)?"":"s"));
+  }catch(e){ toast(e.message,true); }
+});
 $("#search").addEventListener("input",e=>loadSessions(e.target.value.trim()));
 $("#exportBtn").addEventListener("click",()=>{ if(state.sessionId) location.href="/api/export/"+state.sessionId; });
 
@@ -1455,7 +1607,7 @@ async function loadStatus(){
   /* Theme: the early inline script already painted from localStorage. If this is
      the first run (nothing saved yet), adopt the server's stored choice. */
   try{
-    if(!localStorage.getItem("anya-theme") && s.ui_theme){
+    if(!store.get("anya-theme") && s.ui_theme){
       applyTheme(s.ui_theme, s.ui_accent||"", false);
     }
   }catch(e){}
@@ -1492,7 +1644,8 @@ async function loadStatus(){
   if(document.activeElement!==$("#sysPrompt")) $("#sysPrompt").value=s.system_prompt||"";
   $("#backendSel").value=s.backend||"llama";
   $("#idleSel").value=String(s.idle_unload_min||0);
-  $("#aboutLine").textContent = (s.model||"")+" · "+(s.gpu_name||"")+" · backend: "+s.backend;
+  $("#aboutLine").textContent = (s.model||"")+" · "+(s.gpu_name||"")+" · backend: "+s.backend
+    + (s.version? " · v"+s.version : "");
 
   // web browsing state
   const on = !!s.web_enabled;
@@ -1527,6 +1680,8 @@ async function loadStatus(){
   // projects: refresh the "what she's working on" view and the history list
   renderProjects();
   renderLibrary();
+  fillRemote(s.remote);
+  renderUpdate(s.update);
 
   // model: which .gguf is loaded, the others we can find, and the layer range
   maxNgl = s.max_ngl||28;
@@ -1722,6 +1877,7 @@ function switchTab(name){
   if(name==="site"){ renderSite(); }
   if(name==="memory"){ renderMemory(); }
   if(name==="themes"){ renderThemes(); }
+  if(name==="settings"){ fillRemote((state.status||{}).remote); renderUpdate((state.status||{}).update); }
 }
 $$(".tab").forEach(t=>t.addEventListener("click",()=>switchTab(t.dataset.tab)));
 
@@ -2530,8 +2686,21 @@ const THEMES=[
 ];
 const ACCENT_SWATCHES=["#7c5cff","#5865f2","#22d3ee","#22c55e","#10b981",
   "#f59e0b","#fb923c","#ef4444","#f472b6","#ec4899","#a1a1aa","#0ea5e9"];
-let curTheme = localStorage.getItem("anya-theme") || "midnight";
-let curAccent = localStorage.getItem("anya-accent") || "";
+/* Storage can be blocked (private mode, strict privacy settings, embedded views).
+   Never let that take the whole app down — fall back to in-memory. */
+const store = (()=>{
+  const mem={};
+  try{
+    const t="__anya_probe"; localStorage.setItem(t,"1"); localStorage.removeItem(t);
+    return { get:k=>{ try{ return localStorage.getItem(k); }catch(e){ return mem[k]??null; } },
+             set:(k,v)=>{ try{ localStorage.setItem(k,v); }catch(e){ mem[k]=v; } },
+             del:k=>{ try{ localStorage.removeItem(k); }catch(e){ delete mem[k]; } } };
+  }catch(e){
+    return { get:k=>(k in mem? mem[k]:null), set:(k,v)=>{mem[k]=v;}, del:k=>{delete mem[k];} };
+  }
+})();
+let curTheme = store.get("anya-theme") || "midnight";
+let curAccent = store.get("anya-accent") || "";
 
 function hexRgb(h){ const n=parseInt(h.slice(1),16); return [n>>16&255,n>>8&255,n&255]; }
 function clamp(v){ return Math.max(0,Math.min(255,Math.round(v))); }
@@ -2556,9 +2725,9 @@ function applyTheme(id, accent, save){
   window.__themeT=setTimeout(()=>document.body.classList.remove("theme-anim"),380);
 
   try{
-    localStorage.setItem("anya-theme", id);
-    if(curAccent) localStorage.setItem("anya-accent", curAccent);
-    else localStorage.removeItem("anya-accent");
+    store.set("anya-theme", id);
+    if(curAccent) store.set("anya-accent", curAccent);
+    else store.del("anya-accent");
   }catch(e){}
 
   const pick=$("#accentPick"), hex=$("#accentHex");
@@ -2601,7 +2770,19 @@ $("#accentPick")?.addEventListener("input",e=>{ applyTheme(curTheme, e.target.va
 $("#accentReset")?.addEventListener("click",()=>{ applyTheme(curTheme, "", true); renderThemes(); toast("Back to the theme's own accent"); });
 
 /* ---------------------------------------------------------------- chrome */
-$("#toggleSidebar").addEventListener("click",()=>$("#sidebar").classList.toggle("hidden"));
+/* On a phone the sidebar is a drawer; on the desktop it's a column. */
+const PHONE = ()=> window.matchMedia("(max-width:860px)").matches;
+function closeDrawer(){
+  if(PHONE()){ $("#sidebar").classList.add("hidden"); $("#sideScrim").classList.remove("show"); }
+}
+function toggleDrawer(){
+  const hidden=$("#sidebar").classList.toggle("hidden");
+  if(PHONE()) $("#sideScrim").classList.toggle("show", !hidden);
+}
+$("#toggleSidebar").addEventListener("click",toggleDrawer);
+$("#sideScrim")?.addEventListener("click",closeDrawer);
+window.addEventListener("resize",()=>{ if(!PHONE()) $("#sideScrim").classList.remove("show"); });
+if(PHONE()) $("#sidebar").classList.add("hidden");   /* start closed on a phone */
 
 /* section nav ("slider") in the Power tab: click to jump, scroll to highlight */
 document.querySelectorAll(".sec-nav").forEach(nav=>{
@@ -2636,6 +2817,113 @@ document.querySelectorAll(".sec-nav").forEach(nav=>{
   },{passive:true});
 })();
 
+/* ------------------------------------------------------ phone access + updates */
+function fillRemote(r){
+  if(!r) return;
+  const en=$("#remoteEnabled");
+  if(document.activeElement!==en) en.checked=!!r.enabled;
+  if(document.activeElement!==$("#remoteTunnel")) $("#remoteTunnel").value=r.tunnel||"off";
+  if(document.activeElement!==$("#remoteTunnelStart")) $("#remoteTunnelStart").checked=!!r.tunnel_on_start;
+
+  const url=r.tunnel_url||r.tailscale_url||r.lan_url||"";
+  const withKey = url? url+(url.includes("?")?"&":"?")+"k="+encodeURIComponent(r.token) : "";
+  $("#remoteInfo").style.display = r.enabled? "":"none";
+  $("#remoteUrl").value = withKey;
+  $("#remoteToken").value = r.token||"";
+  const qr=$("#remoteQr");
+  if(qr && withKey && qr.dataset.for!==withKey){
+    qr.dataset.for=withKey;
+    qr.src="/api/remote/qr.png?scale=7&url="+encodeURIComponent(withKey);
+  }
+  const btn=$("#remoteTunnelBtn"); if(btn) btn.textContent = r.tunnel_running? "Stop tunnel":"Start tunnel";
+  let note="";
+  if(!r.enabled) note="Off — Anya answers only on this PC.";
+  else if(r.tunnel_running && r.tunnel_url)
+    note='Reachable anywhere at <b>'+esc(r.tunnel_url)+'</b> (temporary, through Cloudflare).';
+  else if(r.tunnel_running) note="Tunnel is coming up… give it a moment.";
+  else if(r.tunnel_error) note="Tunnel: "+esc(r.tunnel_error);
+  else note='On your Wi-Fi: <b>'+esc(r.lan_url||"not connected")+'</b>'+(r.tailscale_url? ' · Tailscale: '+esc(r.tailscale_url):'');
+  if(r.cloudflared===false && (r.tunnel==="cloudflare"||$("#remoteTunnel").value==="cloudflare"))
+    note += ' (cloudflared isn\'t installed yet — press Apply to fetch it)';
+  $("#remoteNote").innerHTML=note;
+}
+
+async function applyRemote(){
+  try{
+    const body={
+      enabled:$("#remoteEnabled").checked,
+      tunnel:$("#remoteTunnel").value,
+      remote_tunnel_on_start:$("#remoteTunnelStart").checked,
+    };
+    const r=await jpost("/api/remote",body);
+    fillRemote(r);
+    if(r.restarting){ toast("Restarting Anya to apply…"); return; }
+    toast(r.enabled? "Phone access is on":"Phone access off");
+  }catch(e){ toast(e.message,true); }
+}
+$("#remoteApply")?.addEventListener("click",applyRemote);
+$("#remoteTunnelBtn")?.addEventListener("click",async()=>{
+  const running=(state.status?.remote||{}).tunnel_running;
+  try{
+    if(!running){
+      let r=await jpost("/api/remote/tunnel",{action:"start"});
+      if(r.error && !r.running){
+        toast("Fetching cloudflared…");
+        await jpost("/api/remote/tunnel",{action:"install"});
+        r=await jpost("/api/remote/tunnel",{action:"start"});
+      }
+      toast(r.url? "Tunnel up":"Tunnel starting…");
+    }else{
+      await jpost("/api/remote/tunnel",{action:"stop"});
+      toast("Tunnel stopped");
+    }
+    await loadStatus();
+  }catch(e){ toast(e.message,true); }
+});
+$("#remoteRotate")?.addEventListener("click",async()=>{
+  try{ fillRemote(await jpost("/api/remote",{rotate_token:true})); toast("New key — rescan the code"); }
+  catch(e){ toast(e.message,true); }
+});
+$("#remoteCopy")?.addEventListener("click",()=>{
+  const u=$("#remoteUrl").value;
+  navigator.clipboard.writeText(u).then(()=>toast("Link copied"),()=>toast("Copy failed",true));
+});
+
+function renderUpdate(u){
+  const note=$("#updateNote"), apply=$("#updateApply"), btn=$("#updateBtn");
+  if(!u){ note.textContent="Not checked yet."; apply.style.display="none"; btn.style.display="none"; return; }
+  if(u.error){ note.innerHTML='<span class="update-new">'+esc(u.error)+'</span> — showing Anya '+esc(u.current||""); }
+  else if(u.has_update){
+    note.innerHTML='<span class="update-new">Version '+esc(u.latest)+' is available</span> — you have '+esc(u.current||"")+'.';
+    apply.style.display="";
+    btn.style.display="";
+  }else{
+    note.innerHTML='<span class="update-ok">You\'re up to date</span> — version '+esc(u.current||"")+'.';
+    apply.style.display="none"; btn.style.display="none";
+  }
+  if(u.notes && u.has_update) note.innerHTML += '<br><span style="color:var(--dim)">'+esc(u.notes.slice(0,240))+'</span>';
+}
+async function checkUpdates(force){
+  try{
+    toast("Checking GitHub…");
+    renderUpdate(await api("/api/update"+(force?"?force=1":"")));
+  }catch(e){ toast(e.message,true); }
+}
+$("#updateCheck")?.addEventListener("click",()=>checkUpdates(true));
+$("#updateBtn")?.addEventListener("click",()=>openPanel("settings"));
+$("#updateApply")?.addEventListener("click",async()=>{
+  if(!confirm("Update Anya now? She'll restart when it's done.")) return;
+  const log=$("#updateLog"); log.style.display=""; log.textContent="Updating…\n";
+  $("#updateApply").disabled=true;
+  try{
+    const r=await jpost("/api/update/apply",{restart:true});
+    log.textContent=(r.output||"")+"\n\n"+(r.ok? "Done — restarting…":"Update failed.");
+    if(r.ok){ toast("Updated — Anya is restarting"); setTimeout(()=>location.reload(), 6000); }
+    else toast("Update failed — see the log",true);
+  }catch(e){ log.textContent="Update failed: "+e.message; toast(e.message,true); }
+  $("#updateApply").disabled=false;
+});
+
 /* ------------------------------------------------------------------ boot */
 (async function boot(){
   autosize();
@@ -2646,7 +2934,8 @@ document.querySelectorAll(".sec-nav").forEach(nav=>{
   $("#tempRange").value=Math.round((s?.temperature??0.6)*100);
   $("#tempVal").textContent=(s?.temperature??0.6).toFixed(2);
   setInterval(loadStatus, 5000);
-  input.focus();
+  checkUpdates(false);          /* look for a new release quietly in the background */
+  if(!PHONE()) input.focus();
 })();
 </script>
 </body>

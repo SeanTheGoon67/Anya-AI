@@ -238,8 +238,57 @@ RAM.
 - **Web browsing** — the on/off switch, lookups per reply, and text kept per page.
 - **Projects** — whether she may create projects, write files and run builds, and
   where the workspace lives (`S:\anya-projects`).
+- **Phone access** — reach her from your phone: the switch, how you get there
+  (this Wi-Fi / Tailscale / Cloudflare tunnel), the QR code and the key.
+- **Updates** — check GitHub for a newer release and update in place.
 
 Changes are saved to `config.json` and survive restarts.
+
+---
+
+## Anya on your phone
+
+Flip on **Phone access** in Settings and Anya also listens on your network, so a
+phone on the same Wi-Fi can open her. The panel shows a **QR code** — scan it
+with the phone's camera and you're in. Requests from this PC are always allowed;
+a phone must present the **key**, which the scanned link supplies (and which is
+then stored as a cookie, so you only do it once per device).
+
+Three ways to reach her:
+
+- **This Wi-Fi** — the plain LAN address, e.g. `http://192.168.1.177:8091`.
+- **Tailscale** — if Tailscale is installed, its address is detected and offered,
+  so it works over mobile data with no port-forwarding.
+- **Cloudflare tunnel** — works from anywhere with no account; Anya offers to
+  download `cloudflared` and start/stop the tunnel for you.
+
+Press **New key** to roll the key (every phone must then be re-added). Turn the
+switch off to go back to this-PC-only. The QR is generated locally by `qr.py` —
+nothing is sent anywhere.
+
+---
+
+## The mobile UI
+
+There is no separate phone app: **the same page adapts**. On a phone the sidebar
+becomes a slide-in drawer (tap the scrim or pick a chat to close it), the top bar
+drops its labels, the Settings panel goes full-width, the composer clears the home
+bar, and text boxes are 16 px so iOS never zooms on focus. There is no horizontal
+scrolling at 360 px or 390 px, and a browser that blocks storage still boots.
+
+---
+
+## Updating Anya
+
+**Settings → Updates → Check for updates** reads the newest release from GitHub
+and compares it to `VERSION`. If there's something newer, press **Update now**:
+
+- a `git`-cloned copy fast-forward pulls;
+- a ZIP download gets the release laid over the source.
+
+Either way your `config.json`, chats (`anya_chats.db`), approvals, models, LoRA
+adapters, training data, library and projects are **never touched**, and Anya
+restarts herself when it's done.
 
 ---
 
@@ -331,6 +380,14 @@ The same HTTP API the window uses:
 | `GET` | `/api/voice` | speech models on disk + the switches |
 | `POST` | `/api/voice/stt` | raw 16 kHz mono WAV body → `{"text":"…"}` |
 | `POST` | `/api/voice/tts` | `{"text":"…"}` → a WAV file |
+| `GET` | `/api/health` | liveness + version (never needs the key) |
+| `GET` | `/api/remote` | phone-access state: URLs, QR payload, tunnel status |
+| `POST` | `/api/remote` | turn phone access on/off, change tunnel, roll the key |
+| `GET` | `/api/remote/qr.png` | the QR code as a PNG |
+| `POST` | `/api/remote/tunnel` | `{"action":"install"\|"start"\|"stop"}` |
+| `GET` | `/api/update` | newest GitHub release vs `VERSION` |
+| `POST` | `/api/update/apply` | apply the update (git pull or zip overlay) |
+| `POST` | `/api/restart` | restart the server |
 
 Quick example:
 
@@ -364,6 +421,10 @@ Any subset; unknown keys are ignored.
 | `memory_learn` | `true` | learn new facts in the background |
 | `memory_inject` | `30` | most facts injected into one message |
 | `memory_dir` | `S:\anya-memory` | where the facts file lives |
+| `remote_enabled` | `false` | also listen on the network so a phone can reach her |
+| `remote_token` | (generated) | the shared key a phone must present |
+| `remote_tunnel` | `false` | use a Cloudflare quick tunnel for access from anywhere |
+| `remote_tunnel_on_start` | `false` | start the tunnel automatically with the app |
 
 ### `/api/chat` streaming events
 
@@ -396,8 +457,10 @@ the window has everything it needs. Run it after any retraining or redeploy.
 creates a throwaway Android project and assembles a real APK (slow; it cleans up
 after itself either way). Project checks — the sandbox, the file/task/approval
 paths, the trigger phrases and the tool-JSON parser — always run, and the memory
-store (add / ignore duplicate / forget) and model discovery are checked every
-time too. `--voice` adds a piper-speaks-then-whisper-reads-it-back round-trip.
+store (add / ignore duplicate / forget), model discovery, the phone-access
+helpers (addresses, key generation, QR encoding) and the updater (version
+parsing, release check, and a safe-overlay test) are checked every time too.
+`--voice` adds a piper-speaks-then-whisper-reads-it-back round-trip.
 
 ---
 

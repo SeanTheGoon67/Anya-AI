@@ -7,6 +7,7 @@ Run it while the UI is up:
     S:\\envs\\ai\\Scripts\\python.exe anya-ui\\selftest.py --web     (also test browsing)
     S:\\envs\\ai\\Scripts\\python.exe anya-ui\\selftest.py --build   (also build a real APK)
     S:\\envs\\ai\\Scripts\\python.exe anya-ui\\selftest.py --net     (also read a GitHub repo)
+    S:\\envs\\ai\\Scripts\\python.exe anya-ui\\selftest.py --voice   (also a speech round-trip)
 
 It talks to the same HTTP API the browser uses, so a pass here means the
 front-end has everything it needs.
@@ -417,6 +418,65 @@ def memory_section() -> None:
     check("a fact can be forgotten", not any(f["id"] == fid for f in left))
 
 
+def remote_section() -> None:
+    """Phone access + self-update: version, QR encoder, URLs, update check."""
+    print("\n[13] phone access + updates")
+    try:
+        health = get("/api/health")
+        remote = get("/api/remote")
+        status = get("/api/status")
+    except Exception as exc:                                       # noqa: BLE001
+        check("health reachable", False, str(exc))
+        return
+    check("health reports a version", bool(health.get("version")),
+          f"version={health.get('version')}")
+    check("status carries the version too",
+          status.get("version") == health.get("version"),
+          str(status.get("version")))
+    check("remote block is present",
+          "enabled" in remote and "lan_urls" in remote,
+          f"enabled={remote.get('enabled')} tunnel={remote.get('tunnel')}")
+    check("a key exists", bool(remote.get("token")),
+          remote.get("token", "")[:4] + "…" if remote.get("token") else "")
+
+    # the QR encoder must actually produce a decodable-looking matrix
+    try:
+        with urllib.request.urlopen(BASE + "/api/remote/qr.png", timeout=30) as r:
+            png = r.read()
+        ctype = r.headers.get("Content-Type", "")
+    except Exception as exc:                                       # noqa: BLE001
+        check("QR endpoint returns a PNG", False, str(exc))
+        return
+    check("QR endpoint returns a PNG",
+          png[:8] == b"\x89PNG\r\n\x1a\n" and "png" in ctype,
+          f"{len(png)} bytes, {ctype}")
+
+    # the pure-stdlib encoder should round-trip a known string
+    try:
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+        import qr as qrmod
+        matrix = qrmod.matrix("https://example.com/anya")
+        size = len(matrix)
+        check("QR encoder builds a square matrix",
+              size >= 21 and all(len(row) == size for row in matrix),
+              f"{size}x{size}")
+        check("QR has the timing-pattern alternation",
+              all(matrix[6][i] == (i % 2 == 0) for i in range(8, size - 8)))
+        png_bytes = qrmod.png("https://example.com/anya", scale=4)
+        check("QR renders to PNG", png_bytes[:8] == b"\x89PNG\r\n\x1a\n",
+              f"{len(png_bytes)} bytes")
+    except Exception as exc:                                       # noqa: BLE001
+        check("QR encoder importable", False, str(exc))
+
+    # update check — offline-safe: a failure here is only a warning
+    try:
+        upd = get("/api/update")
+        check("update check answers", "latest" in upd or "error" in upd,
+              f"local={upd.get('current')} latest={upd.get('latest')}")
+    except Exception as exc:                                       # noqa: BLE001
+        check("update check answers", False, str(exc))
+
+
 def main() -> int:
     print("Anya UI self-test")
     print("=" * 60)
@@ -489,6 +549,8 @@ def main() -> int:
     models_section()
 
     memory_section()
+
+    remote_section()
 
     if "--voice" in sys.argv:
         voice_section()

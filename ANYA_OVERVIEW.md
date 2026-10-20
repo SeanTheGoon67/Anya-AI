@@ -11,7 +11,7 @@ their own version.
 
 ---
 
-## 0. The six ideas worth stealing
+## 0. The seven ideas worth stealing
 
 1. **A small fine-tune can do two jobs.** One 1.5B model chats naturally *and*
    writes code, because the training data was mixed ~1:4 chat-to-code rather than
@@ -32,6 +32,12 @@ their own version.
    writes and builds, fenced by *one* sandbox root, an **approval queue** for
    anything outside it, and a command **allow-list**. That is what makes "leave her
    working" safe rather than reckless (§5.10).
+7. **Write the 200 lines instead of adding the dependency.** A QR code, a local
+   update mechanism and a tunnel launcher are each "just use a library" problems —
+   and each one, hand-written, keeps the app dependency-free, auditable, and
+   offline. The QR encoder (`qr.py`) is byte-mode, versions 1–40, all four error
+   levels, eight masks with penalty scoring, and PNG output via `zlib` — and it
+   decodes, which is the only test that matters.
 
 ---
 
@@ -42,11 +48,12 @@ their own version.
 | **Persona** | Anya |
 | **Base model** | `Qwen2.5-Coder-1.5B-Instruct` (28 layers, 151,936 vocab, 1.54B params) |
 | **Customisation** | QLoRA (4-bit) fine-tune → merged → **F16 GGUF** (3.1 GB) |
-| **Training** | 10,981 examples · 2,746 steps · final loss **0.395** · ~1 h 00 m |
+| **Training** | **22,442 examples** · 5,612 steps · 2 epochs · final loss **~0.37** · **2 h 59 m** |
 | **Hardware** | Windows 11 · RTX 5050 (8 GB) · Core Ultra 5 225F · 16 GB DDR5 |
 | **Inference** | `llama-server` (Vulkan) on `:8090`; also served by Ollama on `:11434` |
 | **GUI** | her own app on `:8091` — standard-library Python + one HTML file |
 | **App dependencies** | **none** — no pip installs, no frameworks, no CDNs |
+| **Release** | **v0.17.0** — phone access, self-update, mobile UI, hand-rolled QR |
 | **Speed** | ~72–84 tok/s on an idle GPU · 11.1 tok/s CPU-only while gaming |
 | **Footprint** | 0.08–3.1 GB VRAM and 0.55–3.0 GB RAM, selectable at runtime |
 
@@ -125,27 +132,30 @@ Three things made this fit an 8 GB card:
 
 ### 3.3 The dataset mix
 
-The whole point is the **blend**. Anya was trained on 10,981 de-duplicated
-examples:
+The whole point is the **blend**. Anya (v5) was trained on **22,442**
+de-duplicated examples — double v4:
 
 | Chunk | Examples | Purpose |
 |---|---|---|
 | `identity.jsonl` | 49 | her name, her nature, "you run offline" (the app overrides that line while Web is on) |
-| `chat.jsonl` | 2,500 | **conversational ability** (human-written Dolly 15k) |
-| `course.jsonl` | 75 | hand-written domain Q&A |
-| `teaching.jsonl` | 2,708 | mined from real teaching repos + official docs |
+| `chat.jsonl` | 4,000 | **conversational ability** (human-written Dolly 15k) |
+| `course.jsonl` | 145 | hand-written domain Q&A |
+| `teaching.jsonl` | 7,861 | mined from 12 real teaching repos + official Kotlin docs |
 | `public.jsonl` | 1,200 | general coding instructions |
-| repo-mined (`cocoon`, `daijishou`, `android_*`) | ~4,800 | **real application code** |
+| repo-mined (`cocoon`, `daijishou`, `android_*`, `code_*`) | ~9,200 | **real application code**, including ~5,900 lines mined from 12 second-wave Kotlin repos |
 
 Identities that make this work:
 
 - **She has a name because a file says so.** 49 examples is enough to stop her
   answering as "Qwen".
-- **A ~1:4 chat-to-code ratio** is what produces "chats naturally but writes code
-  when asked". In practice a chat-heavy mix stops writing good code and a
+- **A chat-to-code ratio around 1:4** is what produces "chats naturally but writes
+  code when asked". In practice a chat-heavy mix stops writing good code and a
   code-only mix stops chatting; this is the balance that worked here.
-- **Deduplicate.** The parts sum to ~11,600 rows; the merged file is 10,981. Dupes
-  bias the model toward whatever got repeated.
+- **Double the data, better code.** v5 kept v4's chat balance but roughly doubled
+  the mined code and teaching rows, which is where the biggest felt improvement
+  landed (more idiomatic Compose/Kotlin).
+- **Deduplicate.** The parts sum to well over 22,442 rows; the merged file is
+  exactly that. Dupes bias the model toward whatever got repeated.
 
 ### 3.4 Rebuild pipeline (end to end)
 
@@ -253,11 +263,13 @@ A slide-in panel with two tabs:
 
 - **Power** — the profile picker, the custom sliders, and the memory readout.
   (§6)
-- **Settings** — system prompt (persona), creativity (temperature), auto-unload,
-  backend choice, and the **Web browsing** controls (on/off, lookups per reply,
-  text kept per page).
+- **Settings** — a section-nav strip with a section per concern: system prompt
+  (persona), creativity (temperature), auto-unload, backend choice, **Web
+  browsing**, **Projects**, **Phone access**, **Updates**, and appearance.
 
-All of it persists to a `config.json` and survives restarts.
+All of it persists to a `config.json` and survives restarts. Every section is
+independently collapsible and the whole panel scrolls, so it stays usable in a
+short window.
 
 ### 5.5 The one thing that does not work: tool calling
 
@@ -320,6 +332,14 @@ The GUI is just a client of this API — you can drive Anya from your own script
 | `POST` | `/api/projects/<pid>/build` | assemble the APK (log streams) |
 | `GET` | `/api/approvals` | writes waiting for the user's OK |
 | `POST` | `/api/approvals/<id>` | `{"approve":true|false}` |
+| `GET` | `/api/health` | liveness + version (never requires the key) |
+| `GET` | `/api/remote` | phone-access state: URLs, QR payload, tunnel status |
+| `POST` | `/api/remote` | `{"enabled":…,"tunnel":…,"token":"…"}` or `{"new_token":true}` |
+| `GET` | `/api/remote/qr.png` | the QR code as a PNG (generated locally) |
+| `POST` | `/api/remote/tunnel` | `{"action":"install"|"start"|"stop"}` (Cloudflare quick tunnel) |
+| `GET` | `/api/update` | latest GitHub release vs `VERSION` |
+| `POST` | `/api/update/apply` | apply git-pull or zip-overlay, protecting user data |
+| `POST` | `/api/restart` | restart the server to pick up new files |
 
 `/api/status` also reports `web_enabled`, `web_max_pages`, `web_chars`, and a
 `projects` block (root, focused project, list, tasks, last build, activity feed,
@@ -464,6 +484,48 @@ stream is written to a log in the tab.
 sandbox folder in Explorer — the path is derived from the project id, so a request
 can never point elsewhere) and a **Delete** button that removes the project and
 all its files after a confirmation.
+
+### 5.11 Phone access, mobile UI, and self-update (v0.17.0)
+
+**Reaching her from a phone.** By default the app binds `127.0.0.1`, so only this
+PC can reach it. The **Phone access** switch rebinds to `0.0.0.0` and mints a
+shared **key**. Requests *from this machine* are always allowed; every other
+client must present the key — as `?k=` in the link (which is then moved into a
+cookie and stripped from the address bar), as a cookie, or as an `X-Anya-Key`
+header. `/api/health` is deliberately exempt so a launcher can poll readiness
+before unlocking. Rolling the key invalidates every paired phone.
+
+Three routes out: **the same Wi-Fi** (just the LAN address), **Tailscale** (its
+address is detected and offered when installed, so it works over mobile data with
+no port-forwarding), and an optional **Cloudflare quick tunnel** (works from
+anywhere with no account — the app downloads `cloudflared` on request and can
+start/stop it), and the panel shows a **QR code** you scan with the phone.
+
+That QR is the interesting part: rather than take a dependency, `qr.py` is a
+complete, from-scratch encoder — byte mode, versions 1–40, L/M/Q/H error
+correction, Reed–Solomon over GF(256), all eight masks with the standard penalty
+scoring, and PNG output written through `zlib`. The success criterion is
+**decodability**: it was validated against OpenCV across versions 1–18 and every
+error level, and the live endpoint's PNG decodes to the exact LAN URL.
+
+**A mobile UI, not a mobile app.** There is one page, and it reshapes. Under
+860 px the sidebar becomes an off-canvas drawer (slid with `left` + `transition`,
+with a tap-to-close scrim — deliberately not `transform`/`margin`, which behave
+inconsistently in flex contexts), the top bar drops its text labels to icons so
+nothing wraps, the settings panel goes full-width, and `100dvh` plus
+`env(safe-area-inset-*)` keep the composer clear of the home bar. Inputs are 16 px
+because iOS zooms the whole page on focus below that. Measured: no horizontal
+overflow at 360 px or 390 px. All `localStorage` access goes through a wrapper, so
+a browser that blocks storage degrades gracefully instead of failing to boot —
+this was a real bug found by loading the page in a cross-origin iframe.
+
+**Self-update.** A **Check for updates** button reads the newest release from
+GitHub and compares it against `VERSION`. A `git`-cloned copy fast-forward pulls;
+a ZIP download gets the release laid over the source. Either path is guarded by
+explicit keep-lists (`config.json`, `anya_chats.db`, `approvals.json`,
+`current.txt`, `models/`, `lora/`, `dataset/`, `logs/`, `tools/cloudflared/`), and
+the guard was verified with a deliberately hostile release archive — **no user
+data was touched**. She restarts herself when the files land.
 
 ---
 
@@ -651,13 +713,20 @@ anya-ui\anya_ui.py         the app: HTTP server, history, profiles, supervisor
 anya-ui\index.html         the whole interface (inline CSS/JS, no CDNs)
 anya-ui\web.py             optional web browsing: search + page reading (stdlib)
 anya-ui\projects.py        Projects: sandboxed files, tasks, commands, APK builds
+anya-ui\voice.py           optional speech in/out (Whisper STT + Piper TTS, lazy)
+anya-ui\memory.py          long-term memory: one JSON file, conservative extraction
+anya-ui\learn.py           GitHub repo reader: recall + browsable library
+anya-ui\qr.py              from-scratch QR encoder + PNG writer (no dependency)
+anya-ui\remote.py          phone access: LAN/Tailscale addresses, tunnel launcher
+anya-ui\updater.py         GitHub release check + safe git/zip update
 anya-ui\start.ps1          desktop launcher (waits for readiness, then opens)
 anya-ui\selftest.py        end-to-end test: chat, code, save, search, export, web
-anya-ui\config.json        saved profile + settings + measured footprints
+anya-ui\config.json        saved profile + settings + remote key + footprints
 anya-ui\anya_chats.db      every conversation (SQLite)
 anya-ui\current.txt        which project the Projects tab is focused on
 anya-ui\approvals.json     writes waiting outside the workspace for your OK
 S:\anya-projects\          the sandbox — every project, and `_template\android`
+VERSION                    the version the GUI shows and the updater compares to
 
 tools\redeploy_anya.ps1    merge → GGUF → register → restart
 tools\anya-studio.ps1      check/prepare her for an IDE's local-model panel

@@ -341,15 +341,17 @@ cd "C:\Users\Administrator\Documents\Default Project"
 ```powershell
 # --- who she is, how she talks, and what she knows about coding --------------
 python .\dataset\build_identity.py       --out .\dataset\identity.jsonl
-python .\dataset\build_chat_dataset.py   --out .\dataset\chat.jsonl --total 2500
+python .\dataset\build_chat_dataset.py   --out .\dataset\chat.jsonl --total 4000
 python .\dataset\build_course_dataset.py --out .\dataset\course.jsonl
 
 # --- teaching material mined from real Android/Kotlin repos ------------------
 # one-time: download the teaching repos (no git needed)
 powershell -ExecutionPolicy Bypass -File .\tools\fetch_teaching_repos.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\fetch_more_repos.ps1   # second wave
 # plus the official Kotlin language docs (~120 files, only a few MB)
 powershell -ExecutionPolicy Bypass -File .\tools\fetch_kotlin_docs.ps1
-python .\dataset\build_teaching_dataset.py --root S:\repos-teach --out .\dataset\teaching.jsonl
+python .\dataset\build_teaching_dataset.py --root S:\repos-teach --out .\dataset\teaching.jsonl `
+  --max-md 9000 --max-kdoc 6000 --per-file 20
 
 # --- domain + code data from the emulator-front-end repos on S:\repos --------
 python .\dataset\build_cocoon_features.py
@@ -360,15 +362,33 @@ python .\dataset\build_kotlin_dataset.py --repo S:\repos\mimir-main       --out 
 python .\dataset\build_kotlin_dataset.py --repo S:\repos\geemu-main       --out .\dataset\android_geemu.jsonl
 python .\dataset\build_kotlin_dataset.py --repo S:\repos\gobe-main        --out .\dataset\android_gobe.jsonl
 
+# --- extra real Kotlin code mined from the second-wave repos -----------------
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\kotlinx.serialization-master --out .\dataset\code_serialization.jsonl --max-examples 800 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\coil-main                     --out .\dataset\code_coil.jsonl          --max-examples 800 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\detekt-main                   --out .\dataset\code_detekt.jsonl        --max-examples 800 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\ktor-main                     --out .\dataset\code_ktor.jsonl          --max-examples 800 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\iosched-main                  --out .\dataset\code_iosched.jsonl       --max-examples 800 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\tivi-main                     --out .\dataset\code_tivi.jsonl          --max-examples 800 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\kotlinx-datetime-master       --out .\dataset\code_datetime.jsonl      --max-examples 300 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\kotlinx-atomicfu-master       --out .\dataset\code_atomicfu.jsonl      --max-examples 300 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\mockk-master                  --out .\dataset\code_mockk.jsonl         --max-examples 300 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\accompanist-main              --out .\dataset\code_accompanist.jsonl   --max-examples 300 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\turbine-trunk                 --out .\dataset\code_turbine.jsonl       --max-examples 300 --per-file 30
+python .\dataset\build_kotlin_dataset.py --repo S:\repos-teach\Pokedex-main                  --out .\dataset\code_pokedex.jsonl       --max-examples 300 --per-file 30
+
 # --- merge everything into one de-duplicated set -----------------------------
 python .\dataset\combine.py --out .\dataset\all.jsonl `
   identity.jsonl chat.jsonl course.jsonl teaching.jsonl public.jsonl `
   cocoon.jsonl daijishou.jsonl `
   android_cannoli.jsonl android_mimir.jsonl android_geemu.jsonl android_gobe.jsonl `
-  cocoon_themes.jsonl platform_launch.jsonl
+  cocoon_themes.jsonl platform_launch.jsonl `
+  code_serialization.jsonl code_coil.jsonl code_detekt.jsonl code_ktor.jsonl `
+  code_iosched.jsonl code_tivi.jsonl code_datetime.jsonl code_atomicfu.jsonl `
+  code_mockk.jsonl code_accompanist.jsonl code_turbine.jsonl code_pokedex.jsonl
 ```
 
-**2. Train the LoRA adapter** (~1–1.5 h on the RTX 5050)
+**2. Train the LoRA adapter** (~3 h on the RTX 5050 for ~5,600 steps / 2 epochs,
+22,442 examples — see `train\qlora_qwen2.5-coder-1.5b.yaml`)
 ```powershell
 llamafactory-cli train .\train\qlora_qwen2.5-coder-1.5b.yaml
 ```
@@ -747,3 +767,126 @@ S:\envs\ai\Scripts\python.exe anya-ui\selftest.py --build   # includes a real AP
 `anya-ui\selftest.py` on its own checks all the offline plumbing: the scaffold,
 the package rewrite, tasks, the file sandbox, the approvals flow, the command
 allow-list, and every trigger phrase.
+
+---
+
+## 13. Anya on your phone
+
+Anya normally listens on `127.0.0.1`, which means **only this PC** can reach
+her. Flip the switch and she also listens on your network, so your phone (or
+tablet, or another laptop) can open her in a browser.
+
+### Turning it on
+
+**Settings → Phone access**. Turn on *Let my phone reach Anya*, pick how you
+want to get there, and press **Save**.
+
+| Route | Works | Needs |
+|---|---|---|
+| **This Wi-Fi only** | at home, on the same network | nothing |
+| **Tailscale** | anywhere, even over mobile data | [Tailscale](https://tailscale.com) installed on both devices |
+| **Cloudflare tunnel** | anywhere, no account | internet; Anya offers to fetch `cloudflared` for you |
+
+Once it's on, the panel shows a **QR code** and the **key**. You have three
+ways in:
+
+1. **Scan the QR** with your phone's camera — it opens the right address with
+   the key already in the link.
+2. **Type the link** by hand (e.g. `http://192.168.1.177:8091/?k=...`).
+3. **Open the plain address** and type the key on the unlock page.
+
+After the first successful key, the phone stores a cookie, so you don't have to
+do it again on that device.
+
+### How the key works
+
+- Requests **from this PC** (`127.0.0.1`) are always allowed — no key, ever.
+- Requests **from anywhere else** must present the key: in the link (`?k=`),
+  in a cookie, or in the `X-Anya-Key` header.
+- The key is generated once and kept in `anya-ui\config.json`
+  (`remote_token`). Press **New key** in Settings to roll it — every phone then
+  has to be re-added.
+- The URL's `?k=` part is **stripped from the address bar** and turned into the
+  cookie as soon as you land, so the key doesn't sit in your history.
+- `/api/health` is exempt so the launcher can poll her before unlocking.
+
+The QR is generated locally by `anya-ui\qr.py` — a small encoder written from
+scratch (no third-party library, nothing sent anywhere).
+
+### Turning it off
+
+Switch *Phone access* back off and save. She goes back to `127.0.0.1` only. If
+you used the Cloudflare tunnel, press **Stop tunnel** as well.
+
+> **Safety:** the key is the only thing between your phone and Anya's Projects
+> sandbox, so treat it like a password. Only turn this on when you want remote
+> access, and roll the key if you read it out loud or paste it somewhere.
+
+---
+
+## 14. Updating Anya
+
+Anya can update **herself** from GitHub.
+
+**Settings → Updates → Check for updates.** She reads the newest release from
+`SeanTheGoon67/Anya-AI` and compares it to `VERSION` in her folder. If there's
+something newer, the button becomes **Update now**.
+
+How the update is applied depends on how you installed her:
+
+| Your copy | What she does |
+|---|---|
+| **Cloned with `git`** | `git fetch --tags --prune` then `git pull --ff-only` |
+| **Downloaded as a ZIP** | downloads the release ZIP and lays it over the source |
+
+Either way, **your data is never touched.** The overlay explicitly skips:
+
+- `anya-ui\config.json` (your settings, theme, key)
+- `anya-ui\anya_chats.db` (your chat history)
+- `anya-ui\approvals.json` and `anya-ui\current.txt`
+- `models\`, `lora\`, `dataset\`, `logs\`
+- `tools\cloudflared\` (the tunnel helper)
+- anything under `S:\anya-projects` (your projects)
+
+When the files are in place she restarts herself to pick them up. If you'd
+rather do it by hand, every release also has a normal ZIP on the
+[releases page](https://github.com/SeanTheGoon67/Anya-AI/releases).
+
+---
+
+## 15. Anya's mobile UI
+
+There is no separate phone app — **the same page adapts**. Open Anya on a phone
+and you get:
+
+- **A drawer, not a squeezed sidebar.** The chat list slides in from the left
+  with a dark scrim behind it; tap the scrim (or pick a chat) to close it. The
+  ☰ button in the top bar toggles it.
+- **A shorter top bar** — labels drop off and only the icons stay, so nothing
+  wraps.
+- **A full-width panel.** Power, Memory, Projects and the rest fill the screen
+  instead of sitting in a cramped column.
+- **No iOS zoom.** Text boxes are 16 px, which is the threshold below which
+  Safari zooms the page when you tap into them.
+- **A reachable composer.** The input row respects the home-bar area
+  (`env(safe-area-inset-*)`), so the send button isn't under your thumb-swipe
+  zone.
+- **No sideways scrolling** at 360 px or 390 px wide.
+
+If your browser blocks site storage, Anya still boots — all storage access is
+wrapped, so a locked-down browser degrades instead of breaking.
+
+---
+
+## 16. Wrapping up — the health check
+
+Any time something feels off:
+
+```powershell
+S:\envs\ai\Scripts\python.exe anya-ui\selftest.py
+```
+
+It checks the model, the memory file, the chat database, the sandbox, the
+web switch, voice plumbing, phone-access helpers, the updater and the QR
+encoder, then prints a per-section report. Add `--voice`, `--web` or `--build`
+to include the heavier end-to-end tests.
