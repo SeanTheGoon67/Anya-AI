@@ -1009,6 +1009,32 @@ body{overscroll-behavior-y:none}
         </div>
       </div>
 
+      <div class="sec" id="secPhoneApp">
+        <label>Phone app (APK)</label>
+        <div class="note" id="phoneNote">Not built yet.</div>
+        <div class="row2" style="margin-top:10px">
+          <button class="btn tight primary" id="phoneBuild">Build the APK</button>
+          <button class="btn tight" id="phoneDownload" style="display:none">Download APK</button>
+        </div>
+        <div class="log" id="phoneLog" style="display:none"></div>
+        <div id="phoneReady" style="display:none;margin-top:14px">
+          <div class="qrbox"><img id="phoneQr" alt="Scan to install Anya on your phone"></div>
+          <div class="field" style="margin-top:12px">
+            <span>Install link</span>
+            <input id="phoneUrl" class="mono-in" readonly spellcheck="false">
+          </div>
+          <div class="row2" style="margin-top:10px">
+            <button class="btn tight" id="phoneCopy">Copy link</button>
+            <button class="btn tight" id="phoneQrRefresh">Refresh code</button>
+          </div>
+        </div>
+        <div class="tip">Builds a real Android app you install on your phone. It is a
+          native chat window that talks to <b>this</b> Anya over your Wi-Fi, Tailscale or
+          the tunnel — so it needs no model of its own and always matches the PC. Scan the
+          code to install, then enter the address and key from <b>Phone access</b> above.
+          The first build takes a couple of minutes; later ones are quick.</div>
+      </div>
+
       <div class="sec" id="secUpdate">
         <label>Updates</label>
         <div class="note" id="updateNote">Not checked yet.</div>
@@ -1682,6 +1708,7 @@ async function loadStatus(){
   renderLibrary();
   fillRemote(s.remote);
   renderUpdate(s.update);
+  renderPhoneApp(s.phone_app);
 
   // model: which .gguf is loaded, the others we can find, and the layer range
   maxNgl = s.max_ngl||28;
@@ -1877,7 +1904,7 @@ function switchTab(name){
   if(name==="site"){ renderSite(); }
   if(name==="memory"){ renderMemory(); }
   if(name==="themes"){ renderThemes(); }
-  if(name==="settings"){ fillRemote((state.status||{}).remote); renderUpdate((state.status||{}).update); }
+  if(name==="settings"){ fillRemote((state.status||{}).remote); renderUpdate((state.status||{}).update); renderPhoneApp((state.status||{}).phone_app); }
 }
 $$(".tab").forEach(t=>t.addEventListener("click",()=>switchTab(t.dataset.tab)));
 
@@ -2887,6 +2914,73 @@ $("#remoteRotate")?.addEventListener("click",async()=>{
 $("#remoteCopy")?.addEventListener("click",()=>{
   const u=$("#remoteUrl").value;
   navigator.clipboard.writeText(u).then(()=>toast("Link copied"),()=>toast("Copy failed",true));
+});
+
+function renderPhoneApp(p){
+  const note=$("#phoneNote"), dl=$("#phoneDownload"), ready=$("#phoneReady");
+  if(!p){ note.textContent="Not built yet."; dl.style.display="none"; ready.style.display="none"; return; }
+  const mb=(p.apk_bytes/1048576).toFixed(1);
+  if(p.apk || p.apk_bytes){
+    note.innerHTML='<span class="update-ok">Ready</span> — '+esc(mb)+' MB Android app.';
+    dl.style.display="";
+  }else{
+    note.innerHTML='Not built yet — press <b>Build the APK</b>.';
+    dl.style.display="none";
+  }
+  const url=p.download_url||"";
+  if(url){
+    ready.style.display="";
+    $("#phoneUrl").value=url;
+    const qr=$("#phoneQr");
+    if(qr && qr.dataset.for!==url){ qr.dataset.for=url; qr.src="/api/phone-app/qr.png?scale=7"; }
+  }else{
+    ready.style.display="none";
+  }
+}
+
+let phoneBuilding=false;
+async function buildPhoneApp(){
+  if(phoneBuilding) return;
+  phoneBuilding=true;
+  const log=$("#phoneLog"), btn=$("#phoneBuild");
+  log.style.display=""; log.textContent="Starting Gradle…\n";
+  btn.disabled=true;
+  let ok=false, err="";
+  try{
+    const r=await fetch("/api/phone-app/build",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    const rd=r.body.getReader(), dec=new TextDecoder();
+    let buf="";
+    while(true){
+      const {done,value}=await rd.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split("\n"); buf=lines.pop()||"";
+      for(const line of lines){
+        if(!line.startsWith("data:")) continue;
+        let ev; try{ ev=JSON.parse(line.slice(5).trim()); }catch{ continue; }
+        if(ev.type==="apk_line"){ log.textContent+=ev.line+"\n"; log.scrollTop=log.scrollHeight; }
+        else if(ev.type==="apk_done"){ ok=!!ev.ok; err=ev.error||""; }
+      }
+    }
+  }catch(e){ err=e.message; }
+  phoneBuilding=false; btn.disabled=false;
+  if(ok){
+    log.textContent+="\nBuild finished.\n";
+    toast("APK ready — scan the code to install");
+    await loadStatus();
+  }else{
+    log.textContent+="\n"+(err||"Build failed — see the log above.")+"\n";
+    toast("Build failed — see the log",true);
+  }
+}
+$("#phoneBuild")?.addEventListener("click",buildPhoneApp);
+$("#phoneDownload")?.addEventListener("click",()=>{ location.href="/anya-phone.apk"; });
+$("#phoneCopy")?.addEventListener("click",()=>{
+  const u=$("#phoneUrl").value;
+  navigator.clipboard.writeText(u).then(()=>toast("Install link copied"),()=>toast("Copy failed",true));
+});
+$("#phoneQrRefresh")?.addEventListener("click",()=>{
+  const qr=$("#phoneQr"); if(qr){ qr.dataset.for=""; }
+  renderPhoneApp((state.status||{}).phone_app);
 });
 
 function renderUpdate(u){

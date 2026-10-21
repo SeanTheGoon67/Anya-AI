@@ -477,6 +477,72 @@ def remote_section() -> None:
         check("update check answers", False, str(exc))
 
 
+def phone_app_section() -> None:
+    """The phone APK: status, download, QR, and the encoder behind the code."""
+    print("\n[14] phone app (APK)")
+    try:
+        info = get("/api/phone-app")
+        status = get("/api/status")
+    except Exception as exc:                                       # noqa: BLE001
+        check("phone-app status reachable", False, str(exc))
+        return
+    check("phone-app status reachable", "name" in info, f"name={info.get('name')}")
+    check("status carries the phone-app block",
+          "phone_app" in status and status["phone_app"].get("name") == "Anya")
+
+    if not (info.get("apk") or info.get("apk_bytes")):
+        check("an APK has been built", False,
+              "press Build in Settings → Phone app, or run "
+              "`python -c \"import sys;sys.path.insert(0,'anya-ui');"
+              "import projects,phoneapp;projects.configure('anya-ui');phoneapp.build()\"`")
+        return
+    check("an APK has been built", True,
+          f"{info['apk_bytes'] / 1048576:.1f} MB")
+
+    # the download must actually be a signed Android package
+    try:
+        with urllib.request.urlopen(BASE + "/anya-phone.apk", timeout=120) as r:
+            apk = r.read()
+        ctype = r.headers.get("Content-Type", "")
+    except Exception as exc:                                       # noqa: BLE001
+        check("APK downloads", False, str(exc))
+        return
+    check("APK downloads", apk[:2] == b"PK" and len(apk) > 1_000_000,
+          f"{len(apk)} bytes")
+    check("APK is served as an Android package",
+          "android.package-archive" in ctype, ctype)
+    check("APK matches the reported size", abs(len(apk) - info["apk_bytes"]) < 4096)
+
+    # it must be a real APK with a manifest and my classes inside
+    try:
+        import io
+        import zipfile
+        z = zipfile.ZipFile(io.BytesIO(apk))
+        names = z.namelist()
+        blob = b"".join(z.read(n) for n in names if n.endswith(".dex"))
+        check("APK has a manifest", "AndroidManifest.xml" in names)
+        check("APK has compiled dex", any(n.endswith(".dex") for n in names),
+              f"{sum(1 for n in names if n.endswith('.dex'))} dex file(s)")
+        check("APK contains Anya's own classes",
+              b"com/anya/phone/MainActivityKt" in blob,
+              "MainActivity + API client + prefs")
+        check("APK talks to the same API the web UI does",
+              b"/api/chat" in blob and b"/api/status" in blob)
+    except Exception as exc:                                       # noqa: BLE001
+        check("APK is readable", False, str(exc))
+
+    # the QR must resolve to a real http(s) URL when phone access is on
+    try:
+        with urllib.request.urlopen(BASE + "/api/phone-app/qr.png", timeout=30) as r:
+            png = r.read()
+        check("APK QR renders", png[:8] == b"\x89PNG\r\n\x1a\n", f"{len(png)} bytes")
+    except Exception as exc:                                       # noqa: BLE001
+        check("APK QR renders", False, str(exc))
+    check("install link is a URL when phone access is on",
+          bool(info.get("download_url", "").startswith("http")),
+          info.get("download_url", "") or "phone access is off")
+
+
 def main() -> int:
     print("Anya UI self-test")
     print("=" * 60)
@@ -551,6 +617,8 @@ def main() -> int:
     memory_section()
 
     remote_section()
+
+    phone_app_section()
 
     if "--voice" in sys.argv:
         voice_section()

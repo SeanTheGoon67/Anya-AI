@@ -59,6 +59,7 @@ import memory                                                    # noqa: E402
 import remote                                                    # noqa: E402
 import updater                                                   # noqa: E402
 import qr                                                        # noqa: E402
+import phoneapp                                                  # noqa: E402
 
 ANYA_VERSION = "0.17.0"
 
@@ -553,6 +554,33 @@ def remote_status() -> dict:
         "cloudflared": bool(tun.get("installed")),
         "phone_url": best,
     }
+
+
+def phone_status() -> dict:
+    """Phone-app state for /api/status and the GUI's Phone app section."""
+    try:
+        st = phoneapp.status(remote_token())
+    except Exception as exc:                                      # noqa: BLE001
+        st = {"exists": False, "apk": "", "apk_bytes": 0, "error": str(exc)}
+    st["download_url"] = phone_apk_url()
+    st["apk_url"] = phone_apk_url()
+    return st
+
+
+def phone_apk_url() -> str:
+    """An absolute URL a phone can use to fetch the APK, or '' if none.
+
+    Prefers whatever route the phone is already using (tunnel, then Tailscale,
+    then LAN), so the QR points somewhere that actually resolves for that phone.
+    """
+    if not phoneapp.published_apk():
+        return ""
+    u = remote_urls()
+    tun = remote.tunnel_status()
+    base = tun.get("url") or u["tailscale_url"] or u["lan_url"]
+    if not base:
+        return ""
+    return base.rstrip("/") + "/anya-phone.apk"
 
 
 def restart_soon(delay: float = 1.2) -> None:
@@ -1945,9 +1973,33 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     # -- access control (phone access) ------------------------------------
+    def _via_proxy(self) -> bool:
+        """True when the request came through the Cloudflare tunnel.
+
+        cloudflared connects to us from 127.0.0.1, so `_from_localhost()` alone
+        would treat the whole public internet as local.  A quick tunnel always
+        adds at least one of these headers; a direct browser hit on this machine
+        does not.
+        """
+        for h in ("Cf-Connecting-Ip", "CF-Connecting-IP", "Cf-Ray",
+                  "X-Forwarded-For", "X-Forwarded-Proto"):
+            if self.headers.get(h):
+                return True
+        return False
+
     def _from_localhost(self) -> bool:
+        # anything arriving through the tunnel is never "this PC", no matter
+        # what loopback address cloudflared used to reach us
+        if self._via_proxy():
+            return False
         ip = (self.client_address[0] if self.client_address else "") or ""
-        return ip in ("127.0.0.1", "::1", "localhost", "")
+        if ip not in ("127.0.0.1", "::1", "localhost", ""):
+            return False
+        # a loopback peer with a public Host header means something is forwarding
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        if host and host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+            return False
+        return True
 
     def _given_key(self) -> str:
         hdr = self.headers.get("X-Anya-Key") or ""
@@ -2037,6 +2089,7 @@ class Handler(BaseHTTPRequestHandler):
                 st["version"] = anya_version()
                 st["remote"] = remote_status()
                 st["update"] = updater.cached()
+                st["phone_app"] = phone_status()
                 return self._json(st)
 
             if path == "/api/health":
@@ -2075,6 +2128,51 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/version":
                 return self._json({"version": anya_version()})
+
+            if path == "/api/phone-app":
+                return self._json(phone_status())
+
+            if path in ("/anya-phone.apk", "/api/phone-app/apk"):
+                apk = phoneapp.published_apk()
+                if not apk or not apk.exists():
+                    return self._json(
+                        {"error": "no APK built yet - press Build in the Phone app "
+                                  "section of Settings"}, 404)
+                body = apk.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "application/vnd.android.package-archive")
+                self.send_header("Content-Disposition",
+                                 'attachment; filename="anya-phone.apk"')
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return self.wfile.write(body)
+
+            if path == "/api/phone-app/qr.png":
+                # a QR pointing straight at the APK, so the phone can scan and
+                # install without typing anything
+                q = {}
+                if "?" in self.path:
+                    q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                try:
+                    scale = max(3, min(14, int((q.get("scale") or ["6"])[0])))
+                except Exception:                                 # noqa: BLE001
+                    scale = 6
+                url = phone_apk_url()
+                if not url:
+                    return self._json({"error": "phone access is off, so there is "
+                                                "no URL for a phone to reach"}, 400)
+                try:
+                    png = qr.png(url, scale=scale, border=4)
+                except Exception as exc:                          # noqa: BLE001
+                    return self._json({"error": f"qr failed: {exc}"}, 400)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return self.wfile.write(png)
 
             if path == "/api/sessions":
                 q = ""
@@ -2249,6 +2347,32 @@ class Handler(BaseHTTPRequestHandler):
                    "owner": man.get("owner"), "repo": man.get("repo"),
                    "ref": man.get("ref"), "files": man.get("files"),
                    "bytes": man.get("bytes")})
+
+    def build_phone_app(self) -> None:
+        """Build the Anya phone APK and stream the log to the browser.
+
+        This runs Gradle through `projects.run`, so the build shares the exact
+        environment and allow-list the Projects sandbox already uses. The APK is
+        published next to the app and served at /anya-phone.apk.
+        """
+        if phoneapp._build_lock.locked():
+            return self._json({"error": "an APK build is already running"}, 409)
+        self._sse_open()
+        self._sse({"type": "apk_start", "ts": time.time()})
+        try:
+            with phoneapp._build_lock:
+                res = phoneapp.build(
+                    on_line=lambda line: self._sse({"type": "apk_line", "line": line}),
+                    key=remote_token())
+        except Exception as exc:                                  # noqa: BLE001
+            self._sse({"type": "apk_done", "ok": False, "error": str(exc)})
+            return
+        self._sse({"type": "apk_done", "ok": bool(res.get("ok")),
+                   "apk": res.get("apk", ""), "bytes": res.get("bytes", 0),
+                   "code": res.get("code"),
+                   "download_url": phone_apk_url(),
+                   "qr_url": "/api/phone-app/qr.png",
+                   "error": "" if res.get("ok") else "build failed"})
 
     def auto_project(self, pid: str) -> None:
         """Work a project unattended, one small step at a time.
@@ -2437,6 +2561,9 @@ class Handler(BaseHTTPRequestHandler):
                 except projects.ProjectError as exc:
                     return self._json({"error": str(exc)}, 400)
                 return self._json(proj)
+
+            if path == "/api/phone-app/build":
+                return self.build_phone_app()
 
             m = re.match(r"^/api/projects/([A-Za-z0-9._-]+)/task$", path)
             if m:
