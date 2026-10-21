@@ -53,7 +53,7 @@ their own version.
 | **Inference** | `llama-server` (Vulkan) on `:8090`; also served by Ollama on `:11434` |
 | **GUI** | her own app on `:8091` — standard-library Python + one HTML file |
 | **App dependencies** | **none** — no pip installs, no frameworks, no CDNs |
-| **Release** | **v0.17.0** — phone access, self-update, mobile UI, hand-rolled QR |
+| **Release** | **v0.18.0** — phone app (APK), phone access, self-update, mobile UI |
 | **Speed** | ~72–84 tok/s on an idle GPU · 11.1 tok/s CPU-only while gaming |
 | **Footprint** | 0.08–3.1 GB VRAM and 0.55–3.0 GB RAM, selectable at runtime |
 
@@ -527,6 +527,38 @@ explicit keep-lists (`config.json`, `anya_chats.db`, `approvals.json`,
 the guard was verified with a deliberately hostile release archive — **no user
 data was touched**. She restarts herself when the files land.
 
+### 5.12 The phone app (Anya builds herself an APK)
+
+Anya can build herself into an **installable Android app**. `phoneapp.py`
+generates a complete Gradle project — a Kotlin/Compose chat window, an HTTP+SSE
+client built on `HttpURLConnection` (no networking library to resolve), prefs for
+the address and key, a Material 3 theme in her own violet, and an adaptive icon —
+then builds it *through* `projects.build_apk`, so it shares the same JDK/SDK
+discovery, environment and command allow-list as the Projects sandbox. One Gradle
+build at a time, behind a lock.
+
+The resulting APK is published to `anya-ui/phone/` and served at
+`/anya-phone.apk`; `/api/phone-app/qr.png` renders a QR pointing at it. The
+download URL prefers whichever route the phone already uses — the tunnel, then
+Tailscale, then the LAN address.
+
+The app deliberately contains **no model**. Shipping a 1.5B GGUF would make the
+APK about a gigabyte and run it far slower than the GPU; instead the phone is a
+thin client, so it stays light and always matches the PC's model, memory and
+settings. Pressing **Build** streams the Gradle log to the browser over SSE, and
+the flow was verified end to end: the APK is a signed package (`aapt2` +
+`apksigner`), contains her classes and the `/api/chat` contract, downloads
+intact, and the install link resolves through the tunnel.
+
+**The security bug this surfaced.** cloudflared connects to the local server from
+`127.0.0.1`, so the "is this request from this PC?" check returned true for
+*everything* arriving through a tunnel — meaning the whole API and the APK were
+open to anyone with the tunnel URL. The check now requires a loopback peer *with
+no forwarding headers and a loopback Host*, so tunnel and LAN traffic need the
+key like everything else (`/api/health` stays exempt so a launcher can poll
+readiness). Verified against the live tunnel: 401 without the key, 200 with it,
+open on localhost.
+
 ---
 
 ## 6. The power limiter (the headline feature)
@@ -719,6 +751,7 @@ anya-ui\learn.py           GitHub repo reader: recall + browsable library
 anya-ui\qr.py              from-scratch QR encoder + PNG writer (no dependency)
 anya-ui\remote.py          phone access: LAN/Tailscale addresses, tunnel launcher
 anya-ui\updater.py         GitHub release check + safe git/zip update
+anya-ui\phoneapp.py        generates + builds Anya's own Android APK (phone app)
 anya-ui\start.ps1          desktop launcher (waits for readiness, then opens)
 anya-ui\selftest.py        end-to-end test: chat, code, save, search, export, web
 anya-ui\config.json        saved profile + settings + remote key + footprints

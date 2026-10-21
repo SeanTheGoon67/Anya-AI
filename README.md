@@ -64,7 +64,7 @@ Goal: run a local coding assistant on this PC, and fine-tune our own version.
 - [x] v4 fine-tune — 10,981 examples, 2,746 steps, **loss 0.395**, 1h00m
 - [x] **v5 fine-tune (current)** — **22,442 examples** (double v4: +12 mined Kotlin repos,
       +3,000 chat, +8,000 teaching), 5,612 steps, 2 epochs, **2h59m**; merged → GGUF →
-      reloaded into **both** Ollama and the browser UI (`VERSION` = **0.17.0**)
+      reloaded into **both** Ollama and the browser UI (`VERSION` = **0.18.0**)
 - [x] Persona: chats normally **and** writes code when asked (`Modelfile` SYSTEM + chat data)
 - [ ] VS Code + Continue wired to local model
 - [x] One-click launcher + full manual: `Start Anya.cmd`, `anya.ps1`, `GUIDE.md`
@@ -149,6 +149,17 @@ Goal: run a local coding assistant on this PC, and fine-tune our own version.
       home bar (`env(safe-area-inset-*)`), inputs sit at 16 px so iOS never zooms
       on focus, and there is no horizontal scroll at 360 px or 390 px. Storage
       access is wrapped, so a locked-down browser can't break the app.
+- [x] **Phone app (APK)** — she builds herself into a real **Android app** you
+      install on your phone: a native Kotlin/Compose chat window with her icon
+      that talks back to the Anya on your PC. Press Build in Settings → Phone app
+      and you get a **scannable QR** and an install link; it works over Wi-Fi,
+      Tailscale or the tunnel. The app carries no model itself, so it always
+      matches your PC. Built through the same sandbox as Projects
+      (`anya-ui\phoneapp.py`). See `GUIDE.md` §17.
+- [x] **Security fix (0.18.0)** — cloudflared proxies through `127.0.0.1`, which
+      made tunnel requests look local and skip the access key. Now a request is
+      local only from a loopback peer with no forwarding headers; tunnel, LAN and
+      APK traffic all need the key. Rotate your key if you used a tunnel on 0.17.0.
 - [x] **Dev tools on this PC** — `adb` added to the user `PATH`
       (`...\Android\Sdk\platform-tools`, v1.0.41) and **git 2.55.0** installed via
       `winget` (`C:\Program Files\Git`, on the system `PATH`). Neither is required

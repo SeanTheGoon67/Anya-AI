@@ -821,6 +821,12 @@ you used the Cloudflare tunnel, press **Stop tunnel** as well.
 > **Safety:** the key is the only thing between your phone and Anya's Projects
 > sandbox, so treat it like a password. Only turn this on when you want remote
 > access, and roll the key if you read it out loud or paste it somewhere.
+>
+> **If you used a Cloudflare tunnel on v0.17.0**, press **New key** once after
+> updating. In 0.17.0 the tunnel proxied requests through `127.0.0.1`, which made
+> them look local and skipped the key — so anyone with the tunnel URL could reach
+> her. That was fixed in 0.18.0: tunnel traffic now needs the key like everything
+> else (only `/api/health` is exempt, so a launcher can poll readiness).
 
 ---
 
@@ -887,6 +893,67 @@ S:\envs\ai\Scripts\python.exe anya-ui\selftest.py
 ```
 
 It checks the model, the memory file, the chat database, the sandbox, the
-web switch, voice plumbing, phone-access helpers, the updater and the QR
-encoder, then prints a per-section report. Add `--voice`, `--web` or `--build`
-to include the heavier end-to-end tests.
+web switch, voice plumbing, phone-access helpers, the updater, the QR encoder
+and the phone app, then prints a per-section report. Add `--voice`, `--web` or
+`--build` to include the heavier end-to-end tests.
+
+---
+
+## 17. The Anya phone app (APK)
+
+A browser is fine on a phone, but there's now a **real Android app** you can
+install — a native chat window, with Anya's icon, that talks to the Anya running
+on your PC.
+
+### Build it
+
+**Settings → Phone app (APK) → Build the APK.** The first build takes a couple of
+minutes (Gradle has to warm up); later ones are seconds. When it finishes you get:
+
+- a **QR code** — scan it with your phone's camera,
+- an **install link** — or type/open it by hand,
+- a **Download APK** button, if you'd rather move the file across yourself.
+
+The link automatically uses whichever route your phone already uses — the tunnel
+if one is up, then Tailscale, then your Wi-Fi address.
+
+### Install it
+
+Android will warn you about installing an app from outside the Play Store
+("Install unknown apps"). That's expected: this is your own app, built on your
+own machine, signed with a debug key.
+
+1. Scan the QR (or open the link) on the phone.
+2. Allow the install when prompted.
+3. Open **Anya**.
+
+### Connect it
+
+On first launch the app asks for two things, both shown in **Settings → Phone
+access** on the PC:
+
+| Field | What to put |
+|---|---|
+| **Address** | the address shown there, e.g. `http://192.168.1.177:8091`, or the tunnel/Tailscale URL |
+| **Key** | the access key |
+
+Press **Connect** — it checks the address and tells you if the key was wrong or
+her model isn't loaded yet. After that it remembers both, and the app opens
+straight into the chat.
+
+### Using it
+
+- Type a message and press **Send**; her reply streams in word by word.
+- **New** starts a fresh conversation; **Disconnect** forgets the address and key.
+- Long replies scroll; bubbles keep her code in a monospace face.
+
+### Why it needs the PC
+
+The app deliberately has **no model inside it**. Shipping a 1.5B model would make
+the APK about a gigabyte and run it far slower than your GPU. Instead the phone is
+a client: your PC does the thinking, so the app is light, always matches your
+model, memory and settings, and updates themselves together.
+
+> **Keep the key private.** The APK download needs the key too — unlike v0.17.0,
+> where a tunnel left the whole API open (see §14). If you used phone access
+> with a tunnel on 0.17.0, press **New key** once after updating.

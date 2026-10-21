@@ -278,6 +278,25 @@ scrolling at 360 px or 390 px, and a browser that blocks storage still boots.
 
 ---
 
+## The Anya phone app (APK)
+
+Anya can build herself into a **real Android app** you install on your phone.
+**Settings → Phone app (APK) → Build the APK** and she assembles a native
+Kotlin/Compose chat window with her icon; when it's done you get a **QR code** and
+an **install link**. Scan it, allow the install, open it, and enter the address
+and key from **Phone access**.
+
+The app is a thin client: it carries **no model**, so it always matches the Anya
+running on your PC (over Wi-Fi, Tailscale or the tunnel) and stays small. The
+first build takes a couple of minutes while Gradle warms up; later ones are quick.
+The install link automatically uses whichever route your phone already uses.
+
+> It's built through the same sandbox as your Projects, signed with a debug key,
+> and served at `/anya-phone.apk`. Android will warn about installing from outside
+> the Play Store — that's expected for your own app.
+
+---
+
 ## Updating Anya
 
 **Settings → Updates → Check for updates** reads the newest release from GitHub
@@ -388,6 +407,10 @@ The same HTTP API the window uses:
 | `GET` | `/api/update` | newest GitHub release vs `VERSION` |
 | `POST` | `/api/update/apply` | apply the update (git pull or zip overlay) |
 | `POST` | `/api/restart` | restart the server |
+| `GET` | `/api/phone-app` | phone-app state: whether an APK exists, its size, the install link |
+| `POST` | `/api/phone-app/build` | build the APK (streams the Gradle log as SSE) |
+| `GET` | `/anya-phone.apk` | download the built APK |
+| `GET` | `/api/phone-app/qr.png` | a QR pointing at the APK download |
 
 Quick example:
 
