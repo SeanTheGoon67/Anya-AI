@@ -37,9 +37,10 @@
   "memory_learn": true,
   "memory_dir": "S:\\anya-memory",
   "memory_inject": 30,
-  "gh_path": "gh",
+  "gh_path": "",
   "remote_enabled": false,
   "remote_token": "",
-  "remote_tunnel": false,
-  "remote_tunnel_on_start": false
+  "remote_tunnel": "off",
+  "remote_tunnel_on_start": false,
+  "remote_discovery": true
 }

@@ -140,6 +140,29 @@ fun ConnectScreen(initialUrl: String, initialKey: String, onConnect: (String, St
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = {
+                busy = true
+                error = ""
+                Thread {
+                    val found = Discovery.find()
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        busy = false
+                        if (found.isNotBlank()) {
+                            url = found
+                            error = ""
+                        } else {
+                            error = "Couldn't find her on this Wi-Fi. Make sure " +
+                                "the phone is on the same network as the PC, and " +
+                                "that phone access is on — or type the address."
+                        }
+                    }
+                }.start()
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (busy) "Looking…" else "Find Anya on my Wi-Fi") }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = key,
@@ -168,7 +191,9 @@ fun ConnectScreen(initialUrl: String, initialKey: String, onConnect: (String, St
         ) { Text(if (busy) "Checking…" else "Connect") }
         Spacer(Modifier.height(10.dp))
         Text(
-            "In Anya on the PC: Settings → Phone access shows this address and key (scan the QR there).",
+            "In Anya on the PC: Settings → Phone access shows this address and key " +
+                "(scan the QR there). If you're on the same Wi-Fi, \u201cFind Anya\u201d " +
+                "fills the address in for you.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -285,9 +310,76 @@ _ANYA_API = r'''package com.anya.phone
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.SocketTimeoutException
 import java.net.URL
 import kotlin.concurrent.thread
+
+/**
+ * Finds Anya on the local Wi-Fi without the user typing an address.
+ *
+ * The PC's Anya answers a UDP probe on port 8092 with a small JSON blob listing
+ * the URLs it can be reached at.  We broadcast the probe, wait briefly for the
+ * first sane reply, and hand the best URL back.  A VPN (or a hotspot that
+ * blocks broadcast) simply finds nothing, and the user can still type the
+ * address by hand.
+ */
+object Discovery {
+    private const val PORT = 8092
+    private val MAGIC = "ANYA-DISCOVER/1".toByteArray()
+
+    /** Broadcast the probe and return the best URL found, or "" on no answer. */
+    fun find(timeoutMs: Int = 2500): String {
+        var socket: DatagramSocket? = null
+        try {
+            socket = DatagramSocket()
+            socket.broadcast = true
+            socket.soTimeout = timeoutMs
+            socket.send(DatagramPacket(MAGIC, MAGIC.size,
+                InetAddress.getByName("255.255.255.255"), PORT))
+            val buf = ByteArray(1024)
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                val reply = DatagramPacket(buf, buf.size)
+                try {
+                    socket.receive(reply)
+                } catch (e: SocketTimeoutException) {
+                    break
+                }
+                val text = String(reply.data, 0, reply.length).trim()
+                val url = bestUrl(text) ?: continue
+                return url
+            }
+        } catch (e: Exception) {
+            // broadcast blocked, no route, or a VPN in the way
+        } finally {
+            socket?.close()
+        }
+        return ""
+    }
+
+    /** Pick the most reachable URL out of one discovery reply. */
+    private fun bestUrl(text: String): String? {
+        return try {
+            val j = JSONObject(text)
+            if (j.optString("app") != "anya") return null
+            val urls = j.optJSONArray("urls") ?: return null
+            val all = (0 until urls.length()).map { urls.optString(it) }
+                .filter { it.isNotBlank() }
+            // prefer a plain Wi-Fi address, then Tailscale, then a tunnel
+            all.firstOrNull { it.startsWith("http://192.168.") }
+                ?: all.firstOrNull { it.startsWith("http://10.") }
+                ?: all.firstOrNull { it.startsWith("http://172.") }
+                ?: all.firstOrNull { it.startsWith("http://") }
+                ?: all.firstOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
 
 /**
  * The whole client: health check plus one streaming chat call.

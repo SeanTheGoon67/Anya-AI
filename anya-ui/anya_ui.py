@@ -259,11 +259,12 @@ DEFAULTS: dict = {
     "memory_learn": True,            # learn new facts automatically after replies
     "memory_dir": r"S:\anya-memory",  # where the facts file lives
     "memory_inject": 30,             # how many facts to feed her per message
-    "gh_path": r"C:\\Users\\Administrator\\AppData\\Local\\Temp\\ghbin\\bin\\gh.exe",
+    "gh_path": "",                   # optional: path to a gh binary, if you have one
     "remote_enabled": False,         # let a phone reach this UI (binds all interfaces)
     "remote_token": "",              # shared key for the phone; generated on first use
     "remote_tunnel": "off",          # "off" | "cloudflare" (quick tunnel, no account)
     "remote_tunnel_on_start": False, # raise the tunnel automatically with the UI
+    "remote_discovery": True,        # answer a phone's UDP probe so it finds this PC
     "measured": {},                  # filled in at runtime: profile -> {vram_mb, tps}
 }
 
@@ -557,6 +558,9 @@ def remote_status() -> dict:
         "tunnel_error": tun.get("error", ""),
         "cloudflared": bool(tun.get("installed")),
         "phone_url": best,
+        "discovery": bool(c.get("remote_discovery", True)),
+        "discovery_running": bool(remote.discovery_status().get("running")),
+        "discovery_port": remote.discovery_status().get("port", 8092),
     }
 
 
@@ -2797,16 +2801,25 @@ class Handler(BaseHTTPRequestHandler):
                         _config["remote_tunnel_on_start"] = bool(body["remote_tunnel_on_start"])
                     if "tunnel" in body:
                         _config["remote_tunnel"] = str(body["tunnel"]) or "off"
+                    if "discovery" in body:
+                        _config["remote_discovery"] = bool(body["discovery"])
                     if body.get("rotate_token"):
                         import secrets
                         _config["remote_token"] = secrets.token_urlsafe(9)
                     tunnel = _config.get("remote_tunnel", "off")
+                    want_disc = bool(_config.get("remote_discovery", True))
+                    remote_on = bool(_config.get("remote_enabled"))
                 save_config()
                 if "tunnel" in body or body.get("rotate_token"):
                     if tunnel == "cloudflare":
                         remote.start_tunnel(int(cfg().get("port", 8091)))
                     else:
                         remote.stop_tunnel()
+                if "discovery" in body:
+                    if want_disc and remote_on:
+                        remote.start_discovery(int(cfg().get("port", 8091)))
+                    else:
+                        remote.stop_discovery()
                 res = remote_status()
                 res["restart_required"] = restart
                 if restart and body.get("restart", True):
@@ -3513,6 +3526,16 @@ def main() -> int:
             and _config.get("remote_tunnel") == "cloudflare":
         threading.Thread(target=lambda: (time.sleep(2), remote.start_tunnel(port)),
                          daemon=True).start()
+
+    # answer a phone's UDP probe so it can find this PC without being told the
+    # address. Only useful while phone access is on.
+    if _config.get("remote_enabled") and _config.get("remote_discovery", True):
+        try:
+            st = remote.start_discovery(port)
+            if not st.get("running"):
+                print(f"    (phone auto-discovery off: {st.get('error', '')})")
+        except Exception as exc:                                  # noqa: BLE001
+            _log_exc("discovery:start")
 
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.daemon_threads = True

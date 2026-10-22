@@ -984,6 +984,10 @@ body{overscroll-behavior-y:none}
           <input type="checkbox" id="remoteTunnelStart">
           <span>Raise the tunnel automatically when Anya starts<span class="sub">Only used with the Cloudflare option above.</span></span>
         </label>
+        <label class="switch" style="margin-top:10px">
+          <input type="checkbox" id="remoteDiscovery">
+          <span>Let the phone app find this PC<span class="sub">Answers a small broadcast on your Wi-Fi so the Anya app fills in the address itself — no typing. On by default.</span></span>
+        </label>
         <div class="row2" style="margin-top:12px">
           <button class="btn tight" id="remoteApply">Apply</button>
           <button class="btn tight" id="remoteTunnelBtn">Start tunnel</button>
@@ -2852,6 +2856,8 @@ function fillRemote(r){
   if(document.activeElement!==en) en.checked=!!r.enabled;
   if(document.activeElement!==$("#remoteTunnel")) $("#remoteTunnel").value=r.tunnel||"off";
   if(document.activeElement!==$("#remoteTunnelStart")) $("#remoteTunnelStart").checked=!!r.tunnel_on_start;
+  const disc=$("#remoteDiscovery");
+  if(disc && document.activeElement!==disc) disc.checked = r.discovery!==false;
 
   const url=r.tunnel_url||r.tailscale_url||r.lan_url||"";
   const withKey = url? url+(url.includes("?")?"&":"?")+"k="+encodeURIComponent(r.token) : "";
@@ -2882,6 +2888,7 @@ async function applyRemote(){
       enabled:$("#remoteEnabled").checked,
       tunnel:$("#remoteTunnel").value,
       remote_tunnel_on_start:$("#remoteTunnelStart").checked,
+      discovery:$("#remoteDiscovery").checked,
     };
     const r=await jpost("/api/remote",body);
     fillRemote(r);

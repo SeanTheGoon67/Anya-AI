@@ -470,6 +470,32 @@ def remote_section() -> None:
     check("a key exists", bool(remote.get("token")),
           remote.get("token", "")[:4] + "…" if remote.get("token") else "")
 
+    # phone auto-discovery: the responder must answer a real broadcast probe
+    try:
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+        import json as _json
+        import remote as rem
+        import socket as _socket
+        rem.start_discovery(8091)
+        probe = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        probe.settimeout(3)
+        try:
+            probe.sendto(rem._MAGIC, ("127.0.0.1", rem.DISCOVERY_PORT))
+            data, _ = probe.recvfrom(1024)
+            blob = _json.loads(data.decode())
+            check("discovery answers a phone probe",
+                  blob.get("app") == "anya" and bool(blob.get("urls")),
+                  " ".join(blob.get("urls", [])))
+            check("discovery reply points at this app's port",
+                  blob.get("port") == 8091, str(blob.get("port")))
+        finally:
+            probe.close()
+        check("discovery status is reported",
+              "discovery" in remote and "discovery_running" in remote,
+              f"running={remote.get('discovery_running')}")
+    except Exception as exc:                                       # noqa: BLE001
+        check("discovery answers a phone probe", False, str(exc))
+
     # the QR encoder must actually produce a decodable-looking matrix
     try:
         with urllib.request.urlopen(BASE + "/api/remote/qr.png", timeout=30) as r:

@@ -42,6 +42,97 @@ _ADDR_TTL = 15.0
 # ---------------------------------------------------------------------------
 # addresses
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# auto-discovery (so the phone never has to be told the address)
+# ---------------------------------------------------------------------------
+# The phone broadcasts a one-line UDP probe on this port; we answer with where
+# Anya lives. Standard library on both sides — no Bonjour service, no extra
+# dependency in the APK.
+
+DISCOVERY_PORT = 8092
+_MAGIC = b"ANYA-DISCOVER/1"
+
+_disc = {"sock": None, "thread": None, "running": False, "error": ""}
+
+
+def _discovery_payload(port: int) -> bytes:
+    """What we tell a phone that just asked where Anya is."""
+    import json                                             # noqa: PLC0415
+    urls = ["http://{}:{}".format(ip, port) for ip in lan_ips()]
+    ts = tailscale_ip()
+    if ts:
+        urls.append("http://{}:{}".format(ts, port))
+    tun = tunnel_status()
+    if tun.get("running") and tun.get("url"):
+        urls.append(str(tun["url"]).rstrip("/"))
+    return json.dumps({
+        "app": "anya",
+        "name": "Anya",
+        "port": port,
+        "host": socket.gethostname(),
+        "urls": urls,
+    }).encode("utf-8")
+
+
+def start_discovery(port: int) -> dict:
+    """Listen for phone probes and answer with this PC's Anya URLs. Idempotent."""
+    with _lock:
+        if _disc["running"]:
+            return {"running": True, "port": DISCOVERY_PORT}
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind(("0.0.0.0", DISCOVERY_PORT))
+            sock.settimeout(1.0)
+        except OSError as exc:
+            if sock:
+                sock.close()
+            _disc["error"] = str(exc)
+            _disc["running"] = False
+            return {"running": False, "error": str(exc)}
+
+        def serve() -> None:
+            while _disc["running"]:
+                try:
+                    data, addr = sock.recvfrom(512)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if not data.startswith(_MAGIC):
+                    continue
+                try:
+                    sock.sendto(_discovery_payload(port), addr)
+                except OSError:
+                    continue
+
+        _disc.update({"sock": sock, "running": True, "error": "",
+                      "thread": threading.Thread(target=serve, daemon=True,
+                                                 name="anya-discovery")})
+        _disc["thread"].start()
+        return {"running": True, "port": DISCOVERY_PORT}
+
+
+def stop_discovery() -> None:
+    with _lock:
+        _disc["running"] = False
+        sock = _disc.get("sock")
+        if sock:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        _disc["sock"] = None
+
+
+def discovery_status() -> dict:
+    with _lock:
+        return {"running": bool(_disc["running"]), "port": DISCOVERY_PORT,
+                "error": _disc.get("error", "")}
+
+
 def lan_ips() -> list:
     """Every usable (non-loopback, non-link-local) IPv4 address on this PC."""
     now = time.time()
