@@ -54,6 +54,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -81,6 +83,26 @@ fun hasPermission(context: android.content.Context, permission: String): Boolean
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Prefs.current is read by the first composition, so it must exist
+        // before setContent runs. Its absence was why the app closed instantly:
+        // a lateinit access throws during the very first frame.
+        Prefs.install(this)
+
+        // If anything still throws, don't just disappear. Record it (so it can
+        // be read back), and remember that the last run failed so the next
+        // launch can start on the setup screen instead of repeating a crash.
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                Prefs.current.recordCrash(
+                    "${error::class.java.simpleName}: ${error.message}\n\n" +
+                        error.stackTraceToString())
+            } catch (ignored: Throwable) {
+                // nothing we can do here
+            }
+            previous?.uncaughtException(thread, error)
+        }
+
         enableEdgeToEdge()
         setContent {
             AnyaTheme {
@@ -100,7 +122,26 @@ fun AnyaApp() {
     val store = remember { Prefs.current }
     var url by remember { mutableStateOf(store.url) }
     var key by remember { mutableStateOf(store.key) }
-    var connected by remember { mutableStateOf(store.url.isNotBlank()) }
+    // A stored address alone is not a connection: the key is required too, so a
+    // half-filled state still shows the setup screen instead of a chat window
+    // that can only 401.
+    var connected by remember { mutableStateOf(store.url.isNotBlank() && store.key.isNotBlank()) }
+
+    // If the previous run died, say so and stay on setup: repeating whatever
+    // crashed it is worse than asking the user to connect again.
+    var lastCrash by remember { mutableStateOf(store.lastCrash) }
+    if (lastCrash.isNotBlank()) {
+        CrashScreen(
+            report = lastCrash,
+            onDismiss = {
+                store.clearCrash()
+                lastCrash = ""
+                store.save("", "")
+                connected = false
+            },
+        )
+        return
+    }
 
     if (!connected) {
         ConnectScreen(
@@ -121,13 +162,49 @@ fun AnyaApp() {
     })
 }
 
+/**
+ * Shows why the last run ended, so a crash is readable on the phone.
+ *
+ * The report is written by the uncaught-exception handler above and kept in
+ * prefs; this screen is reached on the next launch. Dismissing it clears the
+ * saved address and key so the app comes back on the setup screen rather than
+ * walking into the same failure.
+ */
+@Composable
+fun CrashScreen(report: String, onDismiss: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(20.dp),
+    ) {
+        Text("Anya stopped last time", style = MaterialTheme.typography.titleMedium,
+             color = MaterialTheme.colorScheme.error)
+        Spacer(Modifier.height(8.dp))
+        Text("Here's what went wrong. Tap below to reset and try again — if it " +
+             "keeps happening, this text is worth sending on.",
+             style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(12.dp))
+        Box(
+            Modifier.fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                .padding(12.dp),
+        ) {
+            Text(report.take(4000), style = MaterialTheme.typography.bodySmall,
+                 fontFamily = FontFamily.Monospace)
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+            Text("Reset and start over")
+        }
+    }
+}
+
+
 @Composable
 fun ConnectScreen(initialUrl: String, initialKey: String, onConnect: (String, String) -> Unit) {
     var url by remember { mutableStateOf(if (initialUrl.isBlank()) "http://192.168.1.177:8091" else initialUrl) }
     var key by remember { mutableStateOf(initialKey) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
-
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -175,10 +252,20 @@ fun ConnectScreen(initialUrl: String, initialKey: String, onConnect: (String, St
         OutlinedTextField(
             value = key,
             onValueChange = { key = it },
-            label = { Text("Key") },
+            label = { Text("Key (required)") },
+            placeholder = { Text("from Settings → Phone access") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
+            isError = error.isNotBlank() && key.isBlank(),
             modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "The app is useless without the key — it's what lets this phone talk to " +
+                "your PC, and it's the only thing standing between your Anya and " +
+                "anyone else who finds the address.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (error.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
@@ -187,14 +274,24 @@ fun ConnectScreen(initialUrl: String, initialKey: String, onConnect: (String, St
         Spacer(Modifier.height(20.dp))
         Button(
             onClick = {
+                val u = url.trim()
+                val k = key.trim()
+                if (k.isBlank()) {
+                    error = "Enter the access key from Settings → Phone access."
+                    return@Button
+                }
+                if (u.isBlank()) {
+                    error = "Enter the address, or press Find Anya on my Wi-Fi."
+                    return@Button
+                }
                 busy = true
                 error = ""
-                AnyaApi(url.trimEnd('/'), key).check { ok, why ->
+                AnyaApi(u.trimEnd('/'), k).check { ok, why ->
                     busy = false
-                    if (ok) onConnect(url, key) else error = why
+                    if (ok) onConnect(u, k) else error = why
                 }
             },
-            enabled = !busy && url.isNotBlank(),
+            enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (busy) "Checking…" else "Connect") }
         Spacer(Modifier.height(10.dp))
@@ -787,8 +884,24 @@ class Prefs(private val ctx: Context) {
     val url: String get() = sp.getString("url", "") ?: ""
     val key: String get() = sp.getString("key", "") ?: ""
 
+    /** The report written by the last run that died, or "" if it survived. */
+    val lastCrash: String get() = sp.getString("crash", "") ?: ""
+
     fun save(url: String, key: String) {
         sp.edit().putString("url", url.trim().trimEnd('/')).putString("key", key.trim()).apply()
+    }
+
+    /**
+     * Remembers a crash. Written from the uncaught-exception handler, so it has
+     * to be cheap and must never throw; [commit] is used instead of [apply]
+     * because the process is about to end and the write has to reach disk now.
+     */
+    fun recordCrash(report: String) {
+        sp.edit().putString("crash", report.take(6000)).commit()
+    }
+
+    fun clearCrash() {
+        sp.edit().remove("crash").apply()
     }
 }
 '''
