@@ -606,6 +606,30 @@ def phone_app_section() -> None:
           bool(info.get("download_url", "").startswith("http")),
           info.get("download_url", "") or "phone access is off")
 
+    # the release helper must have shipped the APK as an asset. This is worth
+    # checking because a release can look fine and have nothing attached: an
+    # earlier one-off script took a filename and silently ignored it, so every
+    # release up to 0.18.0 had zero assets.
+    try:
+        import json as _json
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent
+                               / "tools"))
+        import release as relmod                    # noqa: PLC0415
+        st, rel = relmod.api("https://api.github.com/repos/{}/releases".format(
+            relmod.REPO))
+        if st == 200 and rel:
+            latest = rel[0]
+            assets = latest.get("assets", [])
+            names = ", ".join(a.get("name", "?") for a in assets) or "none"
+            check(f"latest release has an APK attached ({latest.get('tag_name')})",
+                  any(a.get("name", "").endswith(".apk") for a in assets), names)
+        else:
+            print(f"  [skip] release check unavailable (HTTP {st})")
+    except SystemExit as exc:
+        print(f"  [skip] release check needs a GitHub token ({exc})")
+    except Exception as exc:                                       # noqa: BLE001
+        print(f"  [skip] release check failed: {exc}")
+
 
 def main() -> int:
     print("Anya UI self-test")
