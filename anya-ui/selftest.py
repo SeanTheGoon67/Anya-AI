@@ -81,9 +81,14 @@ def filter_section() -> None:
         ('Let me open that page:\n{"name": "web_open", "arguments": '
          '{"url": "https://x.dev"}}', "Let me open that page:\n"),
         ('```json\n{"name": "web_search", "arguments": {"query": "kotlin"}}\n```', ""),
+        # the malformation that used to leak: a bare tool name, no "name" key
+        ('{"web_search", "query": "latest Android version"}', ""),
+        ('Checking.\n{"build_apk", "arguments": {}}\n', "Checking.\n"),
         ('Here:\n```kotlin\nfun main() {\n  println("hi")\n}\n```\nDone.',
          'Here:\n```kotlin\nfun main() {\n  println("hi")\n}\n```\nDone.'),
         ('The port is {"port": 8091}.', 'The port is {"port": 8091}.'),
+        ('A data class is `{"a": 1}` in JSON terms.',
+         'A data class is `{"a": 1}` in JSON terms.'),
     ]
     bad = []
     for raw, expect in cases:
@@ -98,6 +103,32 @@ def filter_section() -> None:
     for line in bad:
         print("      " + line)
     check("tool-call JSON never reaches the screen", not bad)
+
+    # the same question worded with a leading article must not search twice
+    try:
+        keys = [anya_ui._search_key(q) for q in (
+            "the latest version of python", "latest version of python",
+            "what is the latest version of python", "kotlin coroutines")]
+        check("near-identical searches collapse to one key",
+              len(set(keys[:3])) == 1 and keys[3] not in keys[:3],
+              " / ".join(sorted(set(keys))))
+    except Exception as exc:                            # noqa: BLE001
+        check("near-identical searches collapse to one key", False, str(exc))
+
+    # an unlabelled fence gets the right language; a labelled one is untouched
+    try:
+        f = "`" * 3
+        got = [anya_ui._tag_fences(f + "\n" + body + "\n" + f + "\n").split(f)[1]
+               .split("\n")[0].strip()
+               for body in ("data class User(val id: Int)", "def f():\n    print(1)",
+                            "public static void main(String[] a) {}")]
+        keep = anya_ui._tag_fences(f + "bash\nls -la\n" + f)
+        check("untagged code fences get a language tag",
+              got == ["kotlin", "python", "java"], str(got))
+        check("an already-tagged fence is left alone",
+              keep.split(f)[1].split("\n")[0].strip() == "bash")
+    except Exception as exc:                            # noqa: BLE001
+        check("untagged code fences get a language tag", False, str(exc))
 
 
 def web_section() -> None:

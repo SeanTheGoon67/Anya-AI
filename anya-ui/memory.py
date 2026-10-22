@@ -98,6 +98,15 @@ def clean_fact(text: str) -> str:
     # she must not remember her own promises or code dumps as facts
     if t.startswith("```") or "\n" in t:
         return ""
+    # transient or technical claims are not durable memories about a person:
+    # "Latest version is 3.15.0" came from a web search, "my latest version of
+    # Python was 3.15.0" was her own paraphrase. Neither should be remembered.
+    if re.search(r"(?i)\b(version|release[sd]?|update[sd]?|changelog|"
+                 r"latest|newest|current version|as of|deprecat)\b", t) \
+            and re.search(r"\d", t):
+        return ""
+    if re.search(r"\bv?\d+\.\d+(\.\d+)?\b", t):
+        return ""
     return t
 
 
@@ -205,12 +214,36 @@ def grounded(fact: str, user_text: str) -> bool:
     A small model happily invents plausible memories ("User's name is Anya",
     "User lives in Berlin"). Requiring the fact's distinctive words to appear in
     the user's own message throws almost all of those away.
+
+    Two facts get extra scrutiny because they were the ones that got through:
+
+    * A single shared word is not evidence. "User's name is Python" used to pass
+      on a message about "the latest version of python", because Python reduces to
+      that one content word. Anything leaner than two matching content words must
+      be a *name* fact with a real introduction ("my name is X", "call me X").
+    * Name facts must come from an introduction, never from a word that merely
+      appears somewhere in the message.
     """
-    fw, uw = _distinctive(fact), _distinctive(user_text or "")
+    user_text = user_text or ""
+    fw, uw = _distinctive(fact), _distinctive(user_text)
     if not fw or not uw:
         return False
+
+    low = fact.lower()
+    is_name = low.startswith("user's name is") or low.startswith("user likes to be called")
+    if is_name:
+        # only trust it when the user actually introduced themselves
+        m = re.search(r"(?i)\b(?:my name'?s|my name is|call me)\s+([A-Z][\w'’-]{1,24})",
+                      user_text)
+        if not m:
+            return False
+        return m.group(1).strip().lower() in fw
+
     inter = fw & uw
-    return len(inter) >= min(2, len(fw))
+    if len(fw) <= 2:
+        # a claim this short must be fully backed by the user's own words
+        return inter == fw
+    return len(inter) >= 2
 
 
 def relevant(query: str = "", limit: int = 30) -> list:
@@ -385,6 +418,24 @@ def _selftest() -> int:
                       "User likes Kotlin"):
             if grounded(bogus, "hi my name is Robin and I love dark themes"):
                 print("  FAIL grounded let through:", bogus); fails += 1
+        # a single shared content word is not evidence: this pair is how "User's
+        # name is Python" got remembered from a search about Python versions
+        for bogus, msg in (
+            ("User's name is Python", "the latest version of python"),
+            ("User likes to be called Python", "search the web for python"),
+            ("User's name is Anya", "what have you learned about coding?"),
+        ):
+            if grounded(bogus, msg):
+                print("  FAIL grounded accepted a name with no introduction:",
+                      bogus); fails += 1
+        # a name only counts when the user actually introduced themselves
+        if not grounded("User's name is Robin", "call me Robin please"):
+            print("  FAIL grounded missed 'call me X'"); fails += 1
+        # transient web facts and version strings are not durable memories
+        for junk in ("Latest version is 3.15.0", "Python 3.15.0 was released",
+                     "The current version is 3.16"):
+            if clean_fact(junk):
+                print("  FAIL clean_fact kept a transient fact:", junk); fails += 1
         # phrasing variants of one fact should collapse to a single memory
         clear()
         add(["User works on a weather app for Android"])

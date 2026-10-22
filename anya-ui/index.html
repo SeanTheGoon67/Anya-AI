@@ -1460,6 +1460,7 @@ async function send(){
             lastStep.querySelector(".when").textContent=ev.detail||"";
           }
         }else if(ev.type==="done"){
+          if(ev.text) acc=ev.text;
           t.innerHTML=md(acc);
           setMeta(node,[ev.tps+" tok/s", ev.tokens+" tokens", (state.status.profile||"")]);
           state.messages.push({role:"user",content:text},{role:"assistant",content:acc});

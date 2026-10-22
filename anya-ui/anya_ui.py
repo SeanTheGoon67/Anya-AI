@@ -86,9 +86,13 @@ SYSTEM_PROMPT = (
     "the conversation.\n"
     "- Only output raw code with no explanation when the user explicitly asks for "
     "code only.\n\n"
-    "You are especially good at Python and Kotlin / Jetpack Compose (Android), "
-    "emulator-frontend configuration (platform JSON) and Cocoon Shell theme.json "
-    "files.\n\n"
+    "You're a strong general coding helper, especially with Python and Kotlin for "
+    "Android (including Jetpack Compose).\n\n"
+    "If you're asked what you've learned, what you know, or about yourself, answer "
+    "honestly and briefly: you're a small open coding model running on the user's own "
+    "PC, fine-tuned for coding help, with a local library of GitHub files you've read "
+    "and a memory of facts the user has told you. Do NOT invent a personal history, "
+    "past jobs, training anecdotes, or specific file formats you were 'trained on'.\n\n"
     "You run fully offline: you have no internet access and you never claim to. If "
     "you don't know something, say so instead of inventing it.\n\n"
     "Read the user's words carefully and answer the actual question they asked. "
@@ -1292,6 +1296,60 @@ def _log_exc(where: str) -> None:
         pass
 
 
+def _tag_fences(text: str) -> str:
+    """Add a language tag to a bare ``` fence when the code makes it obvious.
+
+    The 1.5B model usually labels its fences but not always; an unlabelled fence
+    renders with a plain "code" header. This only fills in a tag the source did
+    not have, judging from the code itself, so nothing is ever overwritten.
+    """
+    if "```" not in text:
+        return text
+    parts = text.split("```")
+    # text "A```B```C" -> [A, B, C]: each B/C part starts with what follows the
+    # fence, i.e. an optional language tag then the body. Only the *opening*
+    # fences (even indices from 1) carry a tag; closing fences are whole parts.
+    if len(parts) < 3:
+        return text
+    out = [parts[0]]
+    for idx in range(1, len(parts)):
+        part = parts[idx]
+        out.append("```")
+        if idx % 2 == 1:                     # an opening fence: may need a tag
+            head, sep, body = part.partition("\n")
+            if head.strip():
+                out.append(part)             # already tagged — keep it as-is
+            else:
+                lang = _guess_lang(body)
+                out.append((lang + "\n" if lang else "\n") + body)
+        else:
+            out.append(part)                 # text after a closing fence
+    return "".join(out)
+
+
+def _guess_lang(code: str) -> str:
+    """A best-effort language tag for a code block, or "" when unsure."""
+    c = code or ""
+    tests = (
+        ("kotlin", r"\b(?:fun\s+\w+\s*\(|val\s+\w+\s*[:=]|data class|suspend fun|"
+                   r"package\s+com\.|import\s+kotlin|@Composable)\b"),
+        ("python", r"(?m)^\s*(?:def|class)\s+\w+.*:\s*$|^\s*import\s+\w+\s*$|"
+                   r"^\s*from\s+\w+\s+import|\bprint\s*\(|\bself\b"),
+        ("json", r'^\s*[\{\[][\s\S]*[\}\]]\s*$'),
+        ("bash", r"(?m)^\s*(?:\$|>)\s*\w|^\s*(?:cd|ls|git|pip|npm|gradle)\s"),
+        ("xml", r"^\s*<\?xml|^\s*<[a-zA-Z][\w:.-]*\s"),
+        ("java", r"\b(?:public|private)\s+(?:static\s+)?(?:class|void|int|String)\b"),
+        ("javascript", r"\b(?:const|let|var)\s+\w+\s*=|=>|console\.log"),
+    )
+    for name, pat in tests:
+        try:
+            if re.search(pat, c, re.M):
+                return name
+        except re.error:                                          # noqa: BLE001
+            continue
+    return ""
+
+
 def _sources_block(text: str, sources: list) -> str:
     """A short Sources list for the links Anya was actually given.
 
@@ -1363,6 +1421,16 @@ _TOOL_SHAPE = re.compile(
     r'"(?:name|tool|action)"\s*:\s*"[A-Za-z_][A-Za-z0-9_.\-]{0,39}"'
     r'[\s\S]{0,80}?"(?:arguments|args|params|parameters|input)"', re.I)
 
+# Another malformation the model writes: the tool name as a bare first token,
+# e.g. {"web_search", "query": "latest Android version"} — no "name" key at all.
+# It is not valid JSON, so the parsers miss it and it used to reach the screen.
+# Matched only when the bare word is a tool-ish name, so ordinary prose JSON
+# like {"title", "body"} is not swallowed by accident.
+_TOOL_BARE = re.compile(
+    r'^\s*\{\s*"((?:web|project|new|build|write|read|list|run|recall|learn|'
+    r'site|memory|task|file|dir|apk|search|open)[A-Za-z0-9_.\-]{0,30})"\s*,'
+    r'[\s\S]{0,200}?"[A-Za-z_][A-Za-z0-9_]*"\s*:', re.I)
+
 
 def _project_brief(pid: str, goal: str, step: int, last: str, nudge: str = "") -> str:
     """The state of one project, as a single turn of the unattended loop sees it."""
@@ -1413,6 +1481,25 @@ def _build_block(res: dict) -> str:
     return ("[The APK build just failed. Read the tail below and either fix the file it "
             "names or tell the user plainly what is wrong.\n"
             + (res.get("output") or "")[-3000:] + "]")
+
+
+_SEARCH_NOISE = frozenset({
+    "a", "an", "the", "what", "whats", "is", "are", "was", "of", "for", "to",
+    "in", "on", "and", "or", "please", "me", "current", "currently", "now",
+})
+
+
+def _search_key(query: str) -> str:
+    """A cache key that treats near-identical searches as the same one.
+
+    The model tends to re-ask with a leading article ("the latest version of
+    python" after "latest version of python"), which a plain lowercase compare
+    misses — so the user sees the whole search run twice. Dropping filler words
+    collapses those into one key.
+    """
+    words = re.findall(r"[a-z0-9]+", (query or "").lower())
+    kept = [w for w in words if w not in _SEARCH_NOISE]
+    return " ".join(kept or words)
 
 
 def _query_label(text: str, words: int = 8) -> str:
@@ -1831,7 +1918,8 @@ class _ReplyFilter:
                 self._buf = self._buf[brace:]
                 continue
             rest = self._buf[brace:]
-            shape = bool(_TOOL_SHAPE.search(rest[:400]))
+            shape = bool(_TOOL_SHAPE.search(rest[:400])) \
+                or bool(_TOOL_BARE.match(rest[:240]))
             obj, end = _extract_json(rest)
             if end >= 0 and (_any_tool(obj) or _looks_like_tool(obj)):
                 self._buf = rest[end:]          # a tool call — swallow it
@@ -1897,6 +1985,15 @@ _UNLOCK_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 class Handler(BaseHTTPRequestHandler):
     server_version = "AnyaUI/1.0"
     protocol_version = "HTTP/1.1"
+
+    # builds finished during the current chat turn, keyed by project id, so the
+    # model can't trigger the same Gradle build twice in one reply
+    _turn_builds: dict | None = None
+
+    def _remember_build(self, pid: str, res: dict) -> None:
+        if self._turn_builds is None:
+            self._turn_builds = {}
+        self._turn_builds[pid] = res
 
     # -- helpers ----------------------------------------------------------
     def log_message(self, fmt, *args):        # quiet
@@ -2801,9 +2898,11 @@ class Handler(BaseHTTPRequestHandler):
         self._sse({"type": "start", "session_id": sid})
 
         streamed: list[str] = []
+        fences = {"n": 0}
 
         def emit(piece: str) -> None:
             streamed.append(piece)
+            fences["n"] += piece.count("```")
             self._sse({"type": "token", "text": piece})
 
         # Housing / real-estate prompts are simply outside Anya's scope. Answer
@@ -2822,7 +2921,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         sources: list[dict] = []
-        cache: dict = {"search": {}, "open": {}, "fail": {}}
+        cache: dict = {"search": {}, "open": {}, "fail": {}, "builds": {}}
+        # shared for this turn: the prefetch records a build here, and the tool
+        # loop reads it so a second build_apk is answered, not re-run
+        self._turn_builds = cache["builds"]
         # Only the work the user's own words justify. A 1.5B model invents tool
         # calls on ordinary questions ("write me a data class" -> a write_file
         # into the open project), so these flags decide both which prefetch runs
@@ -2901,6 +3003,10 @@ class Handler(BaseHTTPRequestHandler):
 
             # Persist exactly what was shown, not the raw model output: a tool
             # call the filter swallowed must not reappear in the history.
+            # If the reply stopped inside a code block, close the fence so the
+            # rest of the chat doesn't render as code.
+            if fences["n"] % 2:
+                emit("\n```")
             visible = "".join(streamed)
             if not visible.strip():
                 # The model emitted only a (possibly hallucinated) tool call that
@@ -2915,9 +3021,16 @@ class Handler(BaseHTTPRequestHandler):
                 emit(tail)
                 visible += tail
 
+            # The model doesn't always label its fences; fill in a tag it left
+            # out so the finished reply renders with the right header. The UI
+            # re-renders from this text on `done`, so send it along.
+            tagged = _tag_fences(visible)
+            if tagged != visible:
+                visible = tagged
+
             mid = add_message(sid, "assistant", visible, tokens, tps, profile)
             self._sse({"type": "done", "session_id": sid, "message_id": mid,
-                       "tokens": tokens, "tps": tps,
+                       "tokens": tokens, "tps": tps, "text": visible,
                        "title": (get_session(sid) or {}).get("title", "")})
             _learn_async(message, visible)
         except Exception as exc:                                  # noqa: BLE001
@@ -3003,7 +3116,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _fetch_search(self, query: str, sources: list, cache: dict) -> tuple:
         """Search, memoised for this turn. Returns (results, error, repeated)."""
-        key = " ".join((query or "").lower().split())
+        key = _search_key(query)
         if key in cache["search"]:    # already shown the user once this turn — stay quiet
             return cache["search"][key], "", False
         if key in cache["fail"]:
@@ -3022,7 +3135,8 @@ class Handler(BaseHTTPRequestHandler):
             self._tool_event("done", "web_search", "no results", ok=False)
             return [], "", False
         for r in results:
-            sources.append({"title": r["title"] or r["url"], "url": r["url"]})
+            if not any(s["url"] == r["url"] for s in sources):
+                sources.append({"title": r["title"] or r["url"], "url": r["url"]})
         self._tool_event("done", "web_search", f"{len(results)} results")
         return results, "", False
 
@@ -3051,6 +3165,7 @@ class Handler(BaseHTTPRequestHandler):
     def _run_tool(self, call: dict, sources: list, cache: dict) -> str:
         """Run one tool call — web, library or project — and return what Anya reads."""
         name = call.get("name")
+        self._turn_builds = cache.setdefault("builds", {})
         if name in ("web_search", "web_open"):
             return self._run_web_tool(call, sources, cache)
         if name in ("recall", "learn_repo"):
@@ -3120,6 +3235,7 @@ class Handler(BaseHTTPRequestHandler):
             except projects.ProjectError as exc:
                 self._tool_event("done", "build_apk", str(exc), ok=False)
                 return
+            self._remember_build(pid, res)
             apk = res.get("apk") or {}
             self._tool_event("done", "build_apk", apk.get("name") or f"exit {res['code']}",
                              ok=bool(res.get("ok")))
@@ -3286,12 +3402,30 @@ class Handler(BaseHTTPRequestHandler):
             return f"Task '{title}' is now {status}."
 
         if name == "build_apk":
+            # A build already ran this turn (the prefetch does it when the user
+            # says "make an app and build it"), so answer from that result instead
+            # of running Gradle a second time. The model tends to call build_apk
+            # again after reading the "[the APK built]" note it was handed.
+            done_build = (self._turn_builds or {}).get(pid)
+            if done_build is not None:
+                apk = done_build.get("apk") or {}
+                if done_build.get("ok"):
+                    return (f"The APK is already built from this turn: "
+                            f"{apk.get('path')} ({apk.get('bytes', 0) // 1024} KB). "
+                            "It can be installed on a phone. Do not build again — "
+                            "just tell the user it is ready.")
+                return ("A build already ran this turn and FAILED. Do not run it again "
+                        "— fix the file the error names with write_file, or tell the "
+                        "user plainly what is wrong. The error was:\n\n"
+                        + (done_build.get("output") or "")[-2000:])
             self._tool_event("start", "build_apk", proj["name"])
             try:
                 res = projects.build_apk(pid)
             except projects.ProjectError as exc:
                 self._tool_event("done", "build_apk", str(exc), ok=False)
                 return f"Building failed: {exc}"
+            if self._turn_builds is not None:
+                self._turn_builds[pid] = res
             apk = res.get("apk") or {}
             if res.get("ok"):
                 self._tool_event("done", "build_apk", apk.get("name", "APK"))
