@@ -1066,8 +1066,16 @@ def _patch_gradle(dst: Path) -> None:
     bg = dst / "app" / "build.gradle.kts"
     txt = bg.read_text(encoding="utf-8")
     name, code = _app_version()
-    txt = txt.replace('versionName = "1.0"', f'versionName = "{name}"')
-    txt = txt.replace('versionCode = 1', f'versionCode = {code}')
+    # Replace whatever is currently there, not just the template's "1.0": this
+    # runs on every rebuild, and after the first pass the original literal is
+    # gone. Matching only "1.0" silently kept the very first version the app
+    # was ever built with, so a rebuilt APK would still claim to be the old one.
+    txt, n1 = re.subn(r'versionName\s*=\s*"[^"]*"', f'versionName = "{name}"', txt)
+    txt, n2 = re.subn(r'versionCode\s*=\s*\d+', f'versionCode = {code}', txt)
+    if not n1 or not n2:
+        raise ProjectError(
+            "could not set the app version in build.gradle.kts - expected a "
+            f"versionName/versionCode to replace (found {n1}/{n2})")
     for line in ("testImplementation(libs.junit)",
                  "androidTestImplementation(platform(libs.androidx.compose.bom))",
                  "androidTestImplementation(libs.androidx.compose.ui.test.junit4)",
@@ -1225,7 +1233,12 @@ def publish(src_apk: Path) -> Path:
 
 def build(on_line=None, key: str = "") -> dict:
     """Create-then-build the phone app, publishing the APK for download."""
-    ensure(key)
+    dst = ensure(key)
+    # ensure() returns early when the project already exists, so re-apply the
+    # version and the sources on every build. Otherwise a rebuild after a
+    # VERSION bump keeps stamping the app with whatever it was first built as.
+    _sync_sources(dst)
+    _patch_gradle(dst)
     res = projects.build_apk(PROJECT_ID, on_line=on_line)
     apk = (res.get("apk") or {})
     src = apk.get("path", "")
