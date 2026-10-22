@@ -64,7 +64,7 @@ Goal: run a local coding assistant on this PC, and fine-tune our own version.
 - [x] v4 fine-tune — 10,981 examples, 2,746 steps, **loss 0.395**, 1h00m
 - [x] **v5 fine-tune (current)** — **22,442 examples** (double v4: +12 mined Kotlin repos,
       +3,000 chat, +8,000 teaching), 5,612 steps, 2 epochs, **2h59m**; merged → GGUF →
-      reloaded into **both** Ollama and the browser UI (`VERSION` = **0.18.0**)
+      reloaded into **both** Ollama and the browser UI (`VERSION` = **0.19.0**)
 - [x] Persona: chats normally **and** writes code when asked (`Modelfile` SYSTEM + chat data)
 - [ ] VS Code + Continue wired to local model
 - [x] One-click launcher + full manual: `Start Anya.cmd`, `anya.ps1`, `GUIDE.md`
@@ -156,6 +156,17 @@ Goal: run a local coding assistant on this PC, and fine-tune our own version.
       Tailscale or the tunnel. The app carries no model itself, so it always
       matches your PC. Built through the same sandbox as Projects
       (`anya-ui\phoneapp.py`). See `GUIDE.md` §17.
+- [x] **Talk to her from the phone (0.19.0)** — the app records a clip, sends it
+      to your PC's whisper, and speaks her reply back with piper, so you can hold
+      a spoken conversation from the sofa. It uses the *same two routes the
+      browser uses*, so nothing new is trusted. Mic and mute buttons appear only
+      when the PC reports that capability. A **Find Anya on my Wi-Fi** button
+      makes the phone find the PC by itself — no address to type — via a small
+      UDP probe the server answers. See `GUIDE.md` §17.
+- [x] **Her voice actually works now (0.19.0)** — the web UI's *Speak reply*
+      called `/api/voice/tts`, a route that was documented but never wired up, so
+      it silently 404'd. Now implemented: text in, real WAV out, and the selftest
+      exercises the round-trip (piper speaks, whisper reads it back word-perfect).
 - [x] **Security fix (0.18.0)** — cloudflared proxies through `127.0.0.1`, which
       made tunnel requests look local and skip the access key. Now a request is
       local only from a loopback peer with no forwarding headers; tunnel, LAN and
@@ -235,6 +246,10 @@ anya-ui/projects.py               # Projects sandbox: files, tasks, commands, AP
 anya-ui/learn.py                  # GitHub repo reader + local code library (recall)
 anya-ui/site_tools.py             # GitHub Pages site build/publish
 anya-ui/voice.py                  # speech: whisper (STT) + piper (TTS), lazy-loaded
+anya-ui/phoneapp.py               # builds the phone APK (Compose sources + Gradle)
+anya-ui/remote.py                 # phone access: LAN URLs, Tailscale, tunnel, discovery
+anya-ui/qr.py                     # pure-stdlib QR encoder (link on the phone)
+anya-ui/updater.py                # git/zip self-update
 anya-ui/memory.py                 # long-term memory: facts, grounding filter, recall
 anya-ui/start.ps1                 # desktop launcher (waits for readiness)
 anya-ui/selftest.py               # end-to-end chat/history/export check (+ --web/--build/--voice)

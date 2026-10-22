@@ -53,7 +53,7 @@ their own version.
 | **Inference** | `llama-server` (Vulkan) on `:8090`; also served by Ollama on `:11434` |
 | **GUI** | her own app on `:8091` — standard-library Python + one HTML file |
 | **App dependencies** | **none** — no pip installs, no frameworks, no CDNs |
-| **Release** | **v0.18.0** — phone app (APK), phone access, self-update, mobile UI |
+| **Release** | **v0.19.0** — voice in the phone app, LAN auto-discovery, the missing TTS route |
 | **Speed** | ~72–84 tok/s on an idle GPU · 11.1 tok/s CPU-only while gaming |
 | **Footprint** | 0.08–3.1 GB VRAM and 0.55–3.0 GB RAM, selectable at runtime |
 
@@ -549,6 +549,40 @@ settings. Pressing **Build** streams the Gradle log to the browser over SSE, and
 the flow was verified end to end: the APK is a signed package (`aapt2` +
 `apksigner`), contains her classes and the `/api/chat` contract, downloads
 intact, and the install link resolves through the tunnel.
+
+**Voice, and finding the PC (0.19.0).** Two additions make the phone usable
+without a keyboard or a typed address:
+
+* *Talking.* `VoiceRecorder` captures 16 kHz mono 16-bit PCM with `AudioRecord`
+  and writes the WAV header by hand — exactly what whisper expects, so there is
+  no encoder and no library. The clip is `POST`ed raw to `/api/voice/stt`, the
+  text goes out as the message, and the reply can be spoken back through
+  `/api/voice/tts` (code blocks stripped first, so she doesn't read a hex dump
+  aloud). The mic and mute buttons only appear when `/api/voice` reports the
+  capability, so the UI never offers something that can't work, and
+  `RECORD_AUDIO` is requested at runtime. This reuses the browser's two routes
+  rather than inventing a phone-only API.
+
+* *Auto-discovery.* Rather than a Bonjour dependency on either side, the server
+  answers a UDP probe (`ANYA-DISCOVER/1`) on port **8092** with the URLs it can
+  be reached at, and the app broadcasts one and takes the best reply, preferring
+  Wi-Fi over Tailscale over the tunnel. It is stdlib-only on the server and
+  `DatagramSocket` on the phone, so the APK stays dependency-free. The responder
+  ignores anything that isn't the exact probe and only runs while phone access is
+  on; a VPN that blocks broadcast simply finds nothing and the address can still
+  be typed or scanned.
+
+The APK's `versionName`/`versionCode` are derived from Anya's `VERSION` file
+(0.18.0 → 1800) instead of being hardcoded, so the app and the server it talks to
+cannot drift apart.
+
+**The missing TTS route.** The web UI's *Speak reply* had been `POST`ing to
+`/api/voice/tts` — a route documented in the API table and described in
+`voice.py`'s docstring, but never actually wired into the server. It 404'd, and
+the caller's `if(!res.ok) return` swallowed it, so the feature looked inert
+rather than broken. The route now exists (JSON in, WAV out, 403 when disabled),
+and the selftest performs a real piper → whisper round-trip that would have
+caught the 404.
 
 **The security bug this surfaced.** cloudflared connects to the local server from
 `127.0.0.1`, so the "is this request from this PC?" check returned true for

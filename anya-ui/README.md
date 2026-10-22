@@ -396,14 +396,15 @@ The same HTTP API the window uses:
 | `GET` | `/api/memory` | stored facts + the enabled/learning switches |
 | `POST` | `/api/memory` | `{"text":"…"}` to remember one, `{"clear":true}` to forget all |
 | `DELETE` | `/api/memory/<id>` | forget one fact |
-| `GET` | `/api/voice` | speech models on disk + the switches |
+| `GET` | `/api/voice` | speech models on disk + the switches (the phone reads `stt`/`tts` here) |
 | `POST` | `/api/voice/stt` | raw 16 kHz mono WAV body → `{"text":"…"}` |
 | `POST` | `/api/voice/tts` | `{"text":"…"}` → a WAV file |
 | `GET` | `/api/health` | liveness + version (never needs the key) |
-| `GET` | `/api/remote` | phone-access state: URLs, QR payload, tunnel status |
-| `POST` | `/api/remote` | turn phone access on/off, change tunnel, roll the key |
+| `GET` | `/api/remote` | phone-access state: URLs, QR payload, tunnel status, discovery |
+| `POST` | `/api/remote` | turn phone access on/off, change tunnel, roll the key, toggle discovery |
 | `GET` | `/api/remote/qr.png` | the QR code as a PNG |
 | `POST` | `/api/remote/tunnel` | `{"action":"install"\|"start"\|"stop"}` |
+| — | `UDP :8092` | answers `ANYA-DISCOVER/1` with this PC's Anya URLs (phone auto-discovery) |
 | `GET` | `/api/update` | newest GitHub release vs `VERSION` |
 | `POST` | `/api/update/apply` | apply the update (git pull or zip overlay) |
 | `POST` | `/api/restart` | restart the server |
@@ -411,6 +412,10 @@ The same HTTP API the window uses:
 | `POST` | `/api/phone-app/build` | build the APK (streams the Gradle log as SSE) |
 | `GET` | `/anya-phone.apk` | download the built APK |
 | `GET` | `/api/phone-app/qr.png` | a QR pointing at the APK download |
+
+The APK it builds can chat, **record and transcribe speech**, **play her replies
+aloud** and **find this PC on the Wi-Fi by itself** — all using the routes above
+that the browser already uses.
 
 Quick example:
 

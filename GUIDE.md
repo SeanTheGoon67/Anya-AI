@@ -937,13 +937,47 @@ access** on the PC:
 | **Address** | the address shown there, e.g. `http://192.168.1.177:8091`, or the tunnel/Tailscale URL |
 | **Key** | the access key |
 
+If you're on the same Wi-Fi you can skip the address entirely: press **Find Anya
+on my Wi-Fi** and the app finds the PC itself (see below).
+
 Press **Connect** — it checks the address and tells you if the key was wrong or
 her model isn't loaded yet. After that it remembers both, and the app opens
 straight into the chat.
 
+### Finding the PC by itself
+
+Typing an IP address is the most annoying part of setting this up, so the app
+usually doesn't need one. While phone access is on, the server answers a small
+UDP probe on port **8092**, and the app broadcasts one and uses the reply:
+
+- **Find Anya on my Wi-Fi** fills in the address for you, preferring your
+  Wi-Fi address over Tailscale over the tunnel.
+- The reply only ever names *this* Anya's URLs, and the responder ignores
+  anything that isn't the exact probe, so nothing else on your network can
+  interrogate it. It only runs while phone access is on.
+- A VPN or a hotspot that blocks broadcast will find nothing — then just type
+  the address, or scan the QR.
+
+Turn it off in **Settings → Phone access → "Let the phone app find this PC"** if
+you'd rather it stayed quiet.
+
+### Talking to her
+
+If the **mic** is on in Anya's Settings, the app shows a **Mic** button next to
+Send. Press it, speak, then press **Stop** — the clip goes to your PC's whisper,
+comes back as text, and is sent as your message. If **her voice** is on too, her
+reply is spoken back to you.
+
+Nothing is transcribed on the phone: the audio goes to your PC over your own
+network (or your tunnel, encrypted in transit), the same as if you'd used the
+browser's mic. The buttons only appear when the PC says the capability is
+available, so you'll never press something that can't work. **Mute** silences
+her for the rest of the session.
+
 ### Using it
 
 - Type a message and press **Send**; her reply streams in word by word.
+- **Mic** for voice input, and her replies can be spoken — see above.
 - **New** starts a fresh conversation; **Disconnect** forgets the address and key.
 - Long replies scroll; bubbles keep her code in a monospace face.
 
