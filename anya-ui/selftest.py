@@ -585,6 +585,13 @@ def phone_app_section() -> None:
               "MainActivity + API client + prefs")
         check("APK talks to the same API the web UI does",
               b"/api/chat" in blob and b"/api/status" in blob)
+        # talk-to-her works from the phone too, using the same voice routes
+        check("APK can record and transcribe speech",
+              b"com/anya/phone/VoiceRecorder" in blob and b"/api/voice/stt" in blob)
+        check("APK can play her spoken replies",
+              b"/api/voice/tts" in blob and b"RECORD_AUDIO" in blob)
+        check("APK can find the PC on the Wi-Fi",
+              b"com/anya/phone/Discovery" in blob and b"ANYA-DISCOVER/1" in blob)
     except Exception as exc:                                       # noqa: BLE001
         check("APK is readable", False, str(exc))
 

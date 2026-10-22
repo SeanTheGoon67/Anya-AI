@@ -51,6 +51,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -64,11 +65,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.anya.phone.ui.theme.AnyaTheme
+
+/** True when this app already holds the given Android permission. */
+fun hasPermission(context: android.content.Context, permission: String): Boolean =
+    ContextCompat.checkSelfPermission(context, permission) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -202,13 +210,92 @@ fun ConnectScreen(initialUrl: String, initialKey: String, onConnect: (String, St
 
 @Composable
 fun ChatScreen(url: String, key: String, onForget: () -> Unit) {
+    val context = LocalContext.current
     val api = remember(url, key) { AnyaApi(url, key) }
     val messages = remember { mutableStateListOf<Msg>() }
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     var sessionId by remember { mutableStateOf<String?>(null) }
+    val recorder = remember { VoiceRecorder() }
+    var recording by remember { mutableStateOf(false) }
+    var busyVoice by remember { mutableStateOf(false) }
+    var sttOn by remember { mutableStateOf(false) }
+    var ttsOn by remember { mutableStateOf(false) }
+    var speaker by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+    var note by remember { mutableStateOf("") }
+
+    // ask the PC what she supports so we only show buttons that work
+    LaunchedEffect(url, key) {
+        api.voiceInfo { s, t -> sttOn = s; ttsOn = t }
+    }
+
+    fun playReply(text: String) {
+        if (!ttsOn || text.isBlank()) return
+        // strip code so she doesn't read a hex dump aloud
+        val plain = text.replace(Regex("```[\\s\\S]*?```"), " (code omitted) ")
+            .replace(Regex("`[^`]*`"), "")
+            .replace(Regex("[#*_>\\[\\]()]"), "").trim()
+        if (plain.isBlank()) return
+        api.speak(plain.take(1200)) { wav, why ->
+            if (wav == null || wav.isEmpty()) {
+                if (why.isNotBlank()) note = why
+                return@speak
+            }
+            try {
+                val f = java.io.File.createTempFile("anya", ".wav", context.cacheDir)
+                f.writeBytes(wav)
+                speaker?.release()
+                val mp = android.media.MediaPlayer()
+                mp.setDataSource(f.absolutePath)
+                mp.setOnCompletionListener {
+                    it.release()
+                    f.delete()
+                }
+                mp.prepare()
+                mp.start()
+                speaker = mp
+            } catch (e: Exception) {
+                note = "Couldn't play her voice."
+            }
+        }
+    }
+
+    fun send(text: String) {
+        if (sending || text.isBlank()) return
+        note = ""
+        messages.add(Msg("you", text))
+        val reply = Msg("anya", "")
+        messages.add(reply)
+        sending = true
+        api.chat(sessionId, text,
+            onLine = { chunk -> reply.text += chunk },
+            onSession = { sessionId = it },
+            onDone = { _, _ ->
+                sending = false
+                if (reply.text.isNotBlank()) playReply(reply.text)
+            },
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { speaker?.release() }
+    }
+
+    // runtime mic permission, then start recording
+    val micPermission = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            if (recorder.start()) {
+                recording = true
+            } else {
+                note = "Couldn't open the microphone."
+            }
+        } else {
+            note = "Anya needs microphone permission to hear you."
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
@@ -220,6 +307,14 @@ fun ChatScreen(url: String, key: String, onForget: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Anya", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            if (ttsOn) {
+                TextButton(onClick = {
+                    ttsOn = false
+                    speaker?.release()
+                    speaker = null
+                    note = "Her voice is muted for now."
+                }) { Text("Mute") }
+            }
             TextButton(onClick = { messages.clear(); sessionId = null }) { Text("New") }
             TextButton(onClick = onForget) { Text("Disconnect") }
         }
@@ -230,6 +325,14 @@ fun ChatScreen(url: String, key: String, onForget: () -> Unit) {
         ) {
             items(messages) { m -> Bubble(m) }
         }
+        if (note.isNotBlank()) {
+            Text(
+                note,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.Bottom,
@@ -238,43 +341,52 @@ fun ChatScreen(url: String, key: String, onForget: () -> Unit) {
                 value = input,
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Message Anya…") },
+                placeholder = { Text(if (recording) "Listening…" else "Message Anya…") },
                 maxLines = 5,
+                enabled = !recording,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = {
-                    if (!sending && input.isNotBlank()) {
-                        val text = input.trim()
-                        input = ""
-                        messages.add(Msg("you", text))
-                        val reply = Msg("anya", "")
-                        messages.add(reply)
-                        sending = true
-                        api.chat(sessionId, text,
-                            onLine = { chunk -> reply.text += chunk },
-                            onSession = { sessionId = it },
-                            onDone = { _, _ -> sending = false },
-                        )
-                    }
+                    val text = input.trim(); input = ""; send(text)
                 }),
             )
             Spacer(Modifier.width(8.dp))
+            if (sttOn) {
+                val micColor = if (recording) MaterialTheme.colorScheme.error
+                               else MaterialTheme.colorScheme.surfaceVariant
+                FilledTonalButton(
+                    onClick = {
+                        if (recording) {
+                            recording = false
+                            busyVoice = true
+                            val wav = recorder.stop()
+                            if (wav == null) {
+                                busyVoice = false
+                                note = "That was too short — hold the mic a little longer."
+                            } else {
+                                api.transcribe(wav) { text, why ->
+                                    busyVoice = false
+                                    if (text.isNotBlank()) {
+                                        input = ""
+                                        send(text)
+                                    } else {
+                                        note = why.ifBlank { "She didn't catch that." }
+                                    }
+                                }
+                            }
+                        } else if (hasPermission(context, android.Manifest.permission.RECORD_AUDIO)) {
+                            if (recorder.start()) recording = true else note = "Couldn't open the microphone."
+                        } else {
+                            micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    enabled = !busyVoice && !sending,
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = micColor),
+                ) { Text(if (busyVoice) "…" else if (recording) "Stop" else "Mic") }
+                Spacer(Modifier.width(8.dp))
+            }
             Button(
-                onClick = {
-                    if (!sending && input.isNotBlank()) {
-                        val text = input.trim()
-                        input = ""
-                        messages.add(Msg("you", text))
-                        val reply = Msg("anya", "")
-                        messages.add(reply)
-                        sending = true
-                        api.chat(sessionId, text,
-                            onLine = { chunk -> reply.text += chunk },
-                            onSession = { sessionId = it },
-                            onDone = { _, _ -> sending = false },
-                        )
-                    }
-                },
-                enabled = !sending,
+                onClick = { val text = input.trim(); input = ""; send(text) },
+                enabled = !sending && !recording,
             ) { Text(if (sending) "…" else "Send") }
         }
     }
@@ -382,6 +494,102 @@ object Discovery {
 }
 
 /**
+ * Records one clip from the mic as 16 kHz mono 16-bit PCM WAV.
+ *
+ * The PC's Anya expects exactly that format (it is what the browser sends),
+ * so there is no conversion step here and no encoder dependency: AudioRecord
+ * gives us raw samples and we wrap them in a 44-byte WAV header by hand.
+ */
+class VoiceRecorder {
+    private var recorder: android.media.AudioRecord? = null
+    private var running = false
+    private var pcm = ByteArray(0)
+
+    val isRecording get() = running
+
+    /** Begin capturing. Call stop() to finish and get the WAV bytes. */
+    fun start(): Boolean {
+        if (running) return true
+        val rate = 16000
+        val min = android.media.AudioRecord.getMinBufferSize(
+            rate,
+            android.media.AudioFormat.CHANNEL_IN_MONO,
+            android.media.AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val bufSize = if (min > 0) min * 2 else rate * 2
+        val rec = try {
+            @Suppress("MissingPermission")
+            android.media.AudioRecord(
+                android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                rate,
+                android.media.AudioFormat.CHANNEL_IN_MONO,
+                android.media.AudioFormat.ENCODING_PCM_16BIT,
+                bufSize,
+            )
+        } catch (e: Exception) {
+            return false
+        }
+        if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) {
+            rec.release()
+            return false
+        }
+        recorder = rec
+        pcm = ByteArray(0)
+        running = true
+        rec.startRecording()
+        Thread {
+            val chunk = ByteArray(bufSize)
+            val out = java.io.ByteArrayOutputStream()
+            while (running) {
+                val n = rec.read(chunk, 0, chunk.size)
+                if (n > 0) out.write(chunk, 0, n)
+            }
+            pcm = out.toByteArray()
+        }.start()
+        return true
+    }
+
+    /** Stop capturing and return a complete 16 kHz mono WAV, or null. */
+    fun stop(): ByteArray? {
+        if (!running) return null
+        running = false
+        try {
+            recorder?.stop()
+        } catch (e: Exception) {
+            // stop() throws if nothing was ever captured
+        }
+        recorder?.release()
+        recorder = null
+        // give the reader thread a moment to publish its buffer
+        for (i in 0 until 40) {
+            if (pcm.isNotEmpty()) break
+            try { Thread.sleep(25) } catch (e: InterruptedException) { break }
+        }
+        val body = pcm
+        pcm = ByteArray(0)
+        if (body.size < 3200) return null          // under ~0.1 s of audio
+        return wav(body, 16000, 1, 16)
+    }
+
+    private fun wav(pcm: ByteArray, rate: Int, channels: Int, bits: Int): ByteArray {
+        val byteRate = rate * channels * bits / 8
+        val out = java.io.ByteArrayOutputStream()
+        fun str(s: String) = out.write(s.toByteArray())
+        fun i32(v: Int) = out.write(
+            byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte(),
+                ((v shr 16) and 0xff).toByte(), ((v shr 24) and 0xff).toByte()))
+        fun i16(v: Int) = out.write(
+            byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte()))
+        str("RIFF"); i32(36 + pcm.size); str("WAVE")
+        str("fmt "); i32(16); i16(1); i16(channels); i32(rate)
+        i32(byteRate); i16(channels * bits / 8); i16(bits)
+        str("data"); i32(pcm.size)
+        out.write(pcm)
+        return out.toByteArray()
+    }
+}
+
+/**
  * The whole client: health check plus one streaming chat call.
  *
  * Auth is the same shared key the web UI uses.  We always send it as the
@@ -420,6 +628,82 @@ class AnyaApi(private val base: String, private val key: String) {
                 why = "Could not reach $base — ${e.message ?: "no connection"}"
             }
             android.os.Handler(android.os.Looper.getMainLooper()).post { done(ok, why) }
+        }
+    }
+
+    /** Whether the mic and her voice are switched on, per the PC's settings. */
+    fun voiceInfo(done: (Boolean, Boolean) -> Unit) {
+        thread {
+            var stt = false
+            var tts = false
+            try {
+                val c = open("/api/voice", "GET")
+                if (c.responseCode in 200..299) {
+                    val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                    stt = j.optBoolean("stt", false)
+                    tts = j.optBoolean("tts", false)
+                }
+            } catch (e: Exception) {
+                // leave both false: the buttons just won't appear
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { done(stt, tts) }
+        }
+    }
+
+    /**
+     * Transcribe one WAV clip on the PC (whisper) and hand back the text.
+     *
+     * The raw WAV is the request body, the same contract the browser uses, so
+     * nothing has to be re-encoded here.
+     */
+    fun transcribe(wav: ByteArray, done: (String, String) -> Unit) {
+        thread {
+            var text = ""
+            var why = ""
+            try {
+                val c = open("/api/voice/stt", "POST")
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "audio/wav")
+                c.setFixedLengthStreamingMode(wav.size)
+                c.outputStream.use { it.write(wav) }
+                val body = if (c.responseCode in 200..299)
+                    c.inputStream.bufferedReader().use { it.readText() }
+                else c.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                val j = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+                if (c.responseCode in 200..299) {
+                    text = j.optString("text", "")
+                    if (text.isBlank()) why = "She didn't catch any words."
+                } else {
+                    why = j.optString("error", "Could not transcribe (HTTP ${c.responseCode}).")
+                }
+            } catch (e: Exception) {
+                why = e.message ?: "transcription failed"
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { done(text, why) }
+        }
+    }
+
+    /** Render a spoken reply on the PC (piper). Callback carries WAV bytes. */
+    fun speak(text: String, done: (ByteArray?, String) -> Unit) {
+        thread {
+            var wav: ByteArray? = null
+            var why = ""
+            try {
+                val c = open("/api/voice/tts", "POST")
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(JSONObject().put("text", text).toString().toByteArray()) }
+                if (c.responseCode in 200..299) {
+                    wav = c.inputStream.readBytes()
+                } else {
+                    val body = c.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    why = try { JSONObject(body).optString("error", "") } catch (e: Exception) { "" }
+                    if (why.isBlank()) why = "Her voice is off (HTTP ${c.responseCode})."
+                }
+            } catch (e: Exception) {
+                why = e.message ?: "speech failed"
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { done(wav, why) }
         }
     }
 
@@ -515,6 +799,7 @@ _MANIFEST = '''<?xml version="1.0" encoding="utf-8"?>
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="true"
@@ -644,12 +929,32 @@ def _sync_sources(dst: Path) -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
+def _app_version() -> tuple:
+    """Anya's version, as (name, code) for the APK's manifest.
+
+    The phone app talks to the PC's Anya, so the two should not drift: we read
+    the same `VERSION` file the server reports and encode it as an incrementing
+    versionCode (e.g. 0.18.2 -> 1802) so Android can order builds.
+    """
+    try:
+        text = (Path(__file__).resolve().parent.parent / "VERSION").read_text(
+            encoding="utf-8").strip()
+    except OSError:
+        return "1.0", 1
+    m = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?$", text)
+    if not m:
+        return "1.0", 1
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    return text, major * 10000 + minor * 100 + patch
+
+
 def _patch_gradle(dst: Path) -> None:
-    """Trim the template's test dependencies and set the icon."""
+    """Trim the template's test dependencies, set the icon and the version."""
     bg = dst / "app" / "build.gradle.kts"
     txt = bg.read_text(encoding="utf-8")
-    txt = txt.replace('versionName = "1.0"', 'versionName = "0.17.0"')
-    txt = txt.replace('versionCode = 1', 'versionCode = 1700')
+    name, code = _app_version()
+    txt = txt.replace('versionName = "1.0"', f'versionName = "{name}"')
+    txt = txt.replace('versionCode = 1', f'versionCode = {code}')
     for line in ("testImplementation(libs.junit)",
                  "androidTestImplementation(platform(libs.androidx.compose.bom))",
                  "androidTestImplementation(libs.androidx.compose.ui.test.junit4)",

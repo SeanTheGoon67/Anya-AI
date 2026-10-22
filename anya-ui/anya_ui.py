@@ -2787,6 +2787,26 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": str(exc)}, 400)
                 return self._json({"text": text})
 
+            if path == "/api/voice/tts":
+                # her voice: JSON {"text": "..."} in, WAV bytes out
+                if not cfg().get("voice_tts", False):
+                    return self._json(
+                        {"error": "her voice is switched off in Settings"}, 403)
+                body = self._body()
+                text = str(body.get("text") or "").strip()
+                if not text:
+                    return self._json({"error": "nothing to say"}, 400)
+                try:
+                    wav = voice.synthesize(
+                        text, voice=str(cfg().get("voice_piper_voice",
+                                                  "en_US-lessac-medium")))
+                except voice.VoiceError as exc:
+                    return self._json({"error": str(exc)}, 400)
+                except Exception as exc:                          # noqa: BLE001
+                    _log_exc("voice:tts")
+                    return self._json({"error": f"speech failed: {exc}"}, 500)
+                return self._wav(wav)
+
             if path == "/api/remote":
                 body = self._body()
                 restart = False
