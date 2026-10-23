@@ -722,7 +722,7 @@ class AnyaApi(private val base: String, private val key: String) {
                     why = "Server said HTTP $code."
                 }
             } catch (e: Exception) {
-                why = "Could not reach $base — ${e.message ?: "no connection"}"
+                why = "Could not reach $base — make sure phone and PC are on the same Wi-Fi (or use the tunnel URL) and port 8091 is open. (${e.message ?: "no connection"})"
             }
             android.os.Handler(android.os.Looper.getMainLooper()).post { done(ok, why) }
         }
